@@ -1,0 +1,27 @@
+name: Release
+
+# Tag a commit on main as vX.Y.Z to build and publish a release.
+# The zipped .app is attached as OmniStats.zip — the in-app updater downloads it.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app + helper
+        run: make
+
+      - name: Zip app
+        run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OmniStats.zip
+          generate_release_notes: true

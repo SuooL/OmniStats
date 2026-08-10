@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  build:
+    runs-on: macos-14   # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build app + helper
+        run: make
+
+      - name: Verify outputs
+        run: |
+          test -d dist/OmniStats.app
+          test -f dist/OmniStats.app/Contents/MacOS/OmniStats
+          test -f dist/OmniStats.app/Contents/Resources/omnistats-smcd
+          test -f build/omnistats-smcd
+
+      - name: Package artifact
+        run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OmniStats-app
+          path: OmniStats.zip
