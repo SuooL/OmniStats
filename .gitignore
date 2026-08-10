@@ -11,3 +11,5 @@ dist/
 .vscode/
 .idea/
 *.swp
+*.dmg
+*.zip

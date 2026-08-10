@@ -13,7 +13,7 @@ OBJC_FLAGS := -fobjc-arc -mmacosx-version-min=13.0
 C_FRAMEWORKS := -framework Foundation -framework IOKit -framework CoreFoundation
 SWIFT_FRAMEWORKS := -framework Cocoa -framework IOKit -framework CoreFoundation
 
-.PHONY: all app helper bundle clean install uninstall run test
+.PHONY: all app helper bundle dmg clean install uninstall run test
 
 all: bundle helper
 
@@ -58,6 +58,16 @@ bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) packaging/Info.plist packaging/com.om
 
 run: bundle
 	@open $(DIST)/$(APP).app
+
+# --- distributable .dmg (drag-to-Applications) ---
+dmg: bundle
+	@rm -f $(DIST)/$(APP).dmg
+	@STAGING=$$(mktemp -d); \
+	 cp -R $(DIST)/$(APP).app "$$STAGING/"; \
+	 ln -s /Applications "$$STAGING/Applications"; \
+	 hdiutil create -volname "$(APP)" -srcfolder "$$STAGING" -ov -format UDZO "$(DIST)/$(APP).dmg" >/dev/null; \
+	 rm -rf "$$STAGING"; \
+	 echo "Built $(DIST)/$(APP).dmg"
 
 # --- helper install / uninstall (need sudo) ---
 install: helper

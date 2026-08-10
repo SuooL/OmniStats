@@ -43,6 +43,12 @@ OmniStats 常驻菜单栏,一眼看到 SoC / SSD / 电池温度、功耗与风�
 
 ## 安装
 
+### 下载安装(推荐)
+
+从 [Releases 页面](https://github.com/SuooL/OmniStats/releases/latest) 下载最新
+**`OmniStats.dmg`**,打开后把 **OmniStats** 拖进 Applications。尚未公证——首次打开
+请右键 → **打开**(或 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`)。
+
 ### 从源码构建
 
 需要 Command Line Tools(`xcode-select --install`),无需完整 Xcode。
