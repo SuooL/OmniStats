@@ -17,11 +17,16 @@ jobs:
       - name: Build app + helper
         run: make
 
-      - name: Zip app
+      - name: Build DMG (for humans — drag to Applications)
+        run: make dmg
+
+      - name: Zip app (for the in-app updater)
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: OmniStats.zip
+          files: |
+            dist/OmniStats.dmg
+            OmniStats.zip
           generate_release_notes: true

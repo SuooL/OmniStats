@@ -49,6 +49,13 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 
 ## Install
 
+### Download (recommended)
+
+Grab the latest **`OmniStats.dmg`** from the
+[Releases page](https://github.com/SuooL/OmniStats/releases/latest), open it, and
+drag **OmniStats** into Applications. Not notarized yet — on first launch,
+right-click the app → **Open** (or run `xattr -dr com.apple.quarantine /Applications/OmniStats.app`).
+
 ### Build from source
 
 Requires the Command Line Tools (`xcode-select --install`); full Xcode not needed.
