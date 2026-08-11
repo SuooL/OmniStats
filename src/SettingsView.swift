@@ -3,20 +3,22 @@ import SwiftUI
 enum SettingsSection: String, CaseIterable, Identifiable {
     case fans, general, about
     var id: String { rawValue }
-    var title: String { self == .fans ? "风扇" : self == .general ? "通用" : "关于" }
+    var title: String { self == .fans ? L.t("section.fans") : self == .general ? L.t("section.general") : L.t("section.about") }
     var icon: String { self == .fans ? "fanblades.fill" : self == .general ? "gearshape.fill" : "info.circle.fill" }
 }
+
+// Set from launch args (--section) so screenshots can open a specific pane.
+enum LaunchOptions { static var section: SettingsSection? }
 
 struct SettingsView: View {
     @ObservedObject var mon: Monitor
     @ObservedObject var store: ConfigStore
     let engine: Engine
     let updater: Updater
-    @State private var section: SettingsSection = .fans
+    @State private var section: SettingsSection = LaunchOptions.section ?? .fans
 
     var body: some View {
-        Theme.mode = store.config.appearance
-        applyAppChrome(store.config.appearance)
+        syncPresentation(store.config)
         return HStack(spacing: 0) {
             sidebar
             Divider().overlay(Theme.line)
@@ -30,6 +32,7 @@ struct SettingsView: View {
                minHeight: 600, idealHeight: 660, maxHeight: .infinity)
         .background(Theme.bg)
         .environment(\.colorScheme, store.config.appearance.colorScheme)
+        .onAppear { if let s = LaunchOptions.section { section = s; LaunchOptions.section = nil } }
     }
 
     private var sidebar: some View {
@@ -77,10 +80,10 @@ struct FansPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            header("风扇控制", "温度驱动的转速策略 · 渐进调速,不伤硬件")
+            header(L.t("f.title"), L.t("f.subtitle"))
 
             if mon.fanCount == 0 {
-                infoCard("本机没有风扇", "如 MacBook Air 采用无风扇被动散热,仅提供温度监控。")
+                infoCard(L.t("f.noFan.title"), L.t("f.noFan.body"))
             } else {
                 if !mon.helperAvailable { enableBanner }
                 modePicker
@@ -115,8 +118,8 @@ struct FansPane: View {
 
     private var autoCard: some View {
         card {
-            Label("固件自动控制", systemImage: "cpu").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
-            Text("交回 macOS 固件的散热策略,风扇随负载与温度自动调节。切到「手动」或「曲线」即可接管。")
+            Label(L.t("f.autoTitle"), systemImage: "cpu").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(L.t("f.autoBody"))
                 .font(.system(size: 12)).foregroundStyle(Theme.ink2).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -124,13 +127,13 @@ struct FansPane: View {
     private var manualCard: some View {
         card {
             HStack {
-                Text("固定转速").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(L.t("f.manualTitle")).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
                 Spacer()
                 Text("\(Int(store.config.manualPct))%").font(Theme.telemetry(20)).foregroundStyle(Theme.accent)
             }
             Slider(value: Binding(get: { store.config.manualPct }, set: { store.config.manualPct = $0 }), in: 0...100)
                 .tint(Theme.accent)
-            Text("按各风扇量程的百分比换算,自动适配左右风扇不同上限。")
+            Text(L.t("f.manualBody"))
                 .font(.system(size: 11)).foregroundStyle(Theme.ink3)
         }
     }
@@ -139,12 +142,12 @@ struct FansPane: View {
         let driving = engine.drivingTemp.isNaN ? Double(mon.socMax) : engine.drivingTemp
         return card {
             HStack(spacing: 6) {
-                Text("预设").font(.system(size: 11)).foregroundStyle(Theme.ink3)
-                presetButton("静音", OmniStatsConfig.presetQuiet)
-                presetButton("均衡", OmniStatsConfig.presetBalanced)
-                presetButton("高性能", OmniStatsConfig.presetCool)
+                Text(L.t("f.preset")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                presetButton(L.t("f.presetQuiet"), OmniStatsConfig.presetQuiet)
+                presetButton(L.t("f.presetBalanced"), OmniStatsConfig.presetBalanced)
+                presetButton(L.t("f.presetCool"), OmniStatsConfig.presetCool)
                 Spacer()
-                Text("拖拽控制点微调").font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                Text(L.t("f.dragHint")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
             }
             CurveEditor(points: Binding(get: { store.config.curve }, set: { store.config.curve = $0 }),
                         liveTemp: driving,
@@ -153,10 +156,10 @@ struct FansPane: View {
                         height: 330)
             HStack(spacing: 6) {
                 Circle().fill(Theme.temp(driving)).frame(width: 8, height: 8)
-                Text("驱动温度 \(fmtTemp(Float(driving), fahrenheit: store.config.fahrenheit)) → 目标转速 \(Int(engine.commandedPct))%")
+                Text(L.f("f.drivingTemp", fmtTemp(Float(driving), fahrenheit: store.config.fahrenheit), Int(engine.commandedPct)))
                     .font(.system(size: 11)).foregroundStyle(Theme.ink2)
                 Spacer()
-                Text("光点=当前工作点").font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                Text(L.t("f.operatingHint")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
             }
         }
     }
@@ -170,7 +173,7 @@ struct FansPane: View {
             Button { withAnimation(.easeInOut(duration: 0.2)) { showAdvanced.toggle() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "slider.horizontal.3").font(.system(size: 12)).foregroundStyle(Theme.accent)
-                    Text("高级配置").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                    Text(L.t("f.advanced")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                     Spacer()
                     Image(systemName: showAdvanced ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11)).foregroundStyle(Theme.ink3)
@@ -178,16 +181,16 @@ struct FansPane: View {
             }.buttonStyle(.plain)
 
             if showAdvanced {
-                rampRow("升速", value: Binding(get: { store.config.rampUpPctPerSec }, set: { store.config.rampUpPctPerSec = $0 }), range: 2...40, unit: "%/s")
-                rampRow("降速", value: Binding(get: { store.config.rampDownPctPerSec }, set: { store.config.rampDownPctPerSec = $0 }), range: 2...40, unit: "%/s")
-                rampRow("抖动抑制", value: Binding(get: { store.config.deadbandPct }, set: { store.config.deadbandPct = $0 }), range: 0...10, unit: "%")
-                Text("温度已平滑过滤尖峰;目标变化小于「抖动抑制」不调整;升/降速限制每秒最大变化,渐进不瞬跳。")
+                rampRow(L.t("f.rampUp"), value: Binding(get: { store.config.rampUpPctPerSec }, set: { store.config.rampUpPctPerSec = $0 }), range: 2...40, unit: "%/s")
+                rampRow(L.t("f.rampDown"), value: Binding(get: { store.config.rampDownPctPerSec }, set: { store.config.rampDownPctPerSec = $0 }), range: 2...40, unit: "%/s")
+                rampRow(L.t("f.deadband"), value: Binding(get: { store.config.deadbandPct }, set: { store.config.deadbandPct = $0 }), range: 0...10, unit: "%")
+                Text(L.t("f.advancedBody"))
                     .font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
                 Button { restoreDefaults() } label: {
-                    Label("还原推荐默认", systemImage: "arrow.counterclockwise").font(.system(size: 11))
+                    Label(L.t("f.restoreDefaults"), systemImage: "arrow.counterclockwise").font(.system(size: 11))
                 }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
             } else {
-                Text("已使用推荐默认值 · 升速 \(Int(store.config.rampUpPctPerSec)) / 降速 \(Int(store.config.rampDownPctPerSec)) / 抖动 \(Int(store.config.deadbandPct))")
+                Text(L.f("f.defaultsSummary", Int(store.config.rampUpPctPerSec), Int(store.config.rampDownPctPerSec), Int(store.config.deadbandPct)))
                     .font(.system(size: 11)).foregroundStyle(Theme.ink3)
             }
         }
@@ -200,7 +203,8 @@ struct FansPane: View {
     }
     private func rampRow(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String) -> some View {
         HStack(spacing: 8) {
-            Text(label).font(.system(size: 12)).foregroundStyle(Theme.ink2).frame(width: 34, alignment: .leading)
+            Text(label).font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                .lineLimit(1).fixedSize().frame(minWidth: 34, alignment: .leading)
             Slider(value: value, in: range).tint(Theme.accent)
             Text("\(Int(value.wrappedValue))\(unit)").font(Theme.telemetry(11)).foregroundStyle(Theme.ink2).frame(width: 46, alignment: .trailing)
         }
@@ -208,15 +212,20 @@ struct FansPane: View {
 
     private var liveFans: some View {
         card {
-            Text("实时转速").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(L.t("f.liveRpm")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
             ForEach(0..<mon.fanCount, id: \.self) { i in
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(i == 0 ? "左风扇" : i == 1 ? "右风扇" : "风扇\(i+1)").font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                    HStack(spacing: 6) {
+                        Text(i == 0 ? L.t("m.fanLeft") : i == 1 ? L.t("m.fanRight") : L.f("m.fanN", i + 1))
+                            .font(.system(size: 12)).foregroundStyle(Theme.ink2)
                         Spacer()
                         Text(i < mon.fanRPM.count && !mon.fanRPM[i].isNaN ? "\(Int(mon.fanRPM[i]))" : "—")
                             .font(Theme.telemetry(14)).foregroundStyle(Theme.ink)
                         Text("rpm").font(.system(size: 9)).foregroundStyle(Theme.ink3)
+                        if i < mon.fanRPM.count, i < mon.fanMax.count, !mon.fanRPM[i].isNaN, mon.fanMax[i] > 0 {
+                            Text(String(format: "%.0f%%", Double(mon.fanRPM[i] / mon.fanMax[i]) * 100))
+                                .font(Theme.telemetry(12)).foregroundStyle(Theme.accent)
+                        }
                     }
                     if i < mon.fanRPM.count, i < mon.fanMax.count, !mon.fanRPM[i].isNaN, mon.fanMax[i] > 0 {
                         ProgressView(value: Double(mon.fanRPM[i] / mon.fanMax[i])).tint(Theme.accent).controlSize(.small)
@@ -230,12 +239,12 @@ struct FansPane: View {
         HStack(spacing: 12) {
             Image(systemName: "lock.shield.fill").foregroundStyle(Theme.accent)
             VStack(alignment: .leading, spacing: 2) {
-                Text("风扇控制未启用").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text("可先设计曲线;点击授权一次安装 root 助手后即生效。").font(.system(size: 11)).foregroundStyle(Theme.ink2)
+                Text(L.t("f.enableBannerTitle")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(L.t("f.enableBannerBody")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
             }
             Spacer()
             Button { mon.enableControl() } label: {
-                HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? "正在启用…" : "启用…") }
+                HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? L.t("m.enabling") : L.t("f.enableShort")) }
             }.buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(mon.busy)
         }
         .padding(12).frame(maxWidth: .infinity)
@@ -268,34 +277,94 @@ struct FansPane: View {
 // MARK: - General
 struct GeneralPane: View {
     @ObservedObject var store: ConfigStore
+    private var cfg: OmniStatsConfig { store.config }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("通用").font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text("显示与单位").font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            }
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("主题").font(.system(size: 13)).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Picker("", selection: Binding(get: { store.config.appearance }, set: { store.config.appearance = $0 })) {
-                        ForEach(AppearanceMode.allCases) { m in Text(m.title).tag(m) }
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L.t("g.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
+                    Text(L.t("g.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
                 }
-                Divider().overlay(Theme.line)
-                HStack {
-                    Text("温度单位").font(.system(size: 13)).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Picker("", selection: Binding(get: { store.config.fahrenheit }, set: { store.config.fahrenheit = $0 })) {
-                        Text("°C").tag(false); Text("°F").tag(true)
-                    }.pickerStyle(.segmented).labelsHidden().frame(width: 96)
+
+                // Display, language & colors
+                cardSection(L.t("g.sectionDisplay")) {
+                    row(L.t("g.language")) {
+                        Picker("", selection: bind(\.language)) {
+                            ForEach(AppLanguage.allCases) { l in Text(l.displayName).tag(l) }
+                        }.labelsHidden().frame(width: 160)
+                    }
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.theme")) {
+                        Picker("", selection: bind(\.appearance)) {
+                            ForEach(AppearanceMode.allCases) { m in Text(m.title).tag(m) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
+                    }
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.tempUnit")) {
+                        Picker("", selection: bind(\.fahrenheit)) {
+                            Text("°C").tag(false); Text("°F").tag(true)
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 96)
+                    }
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.accent")) { accentSwatches }
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.numberColor")) {
+                        Picker("", selection: bind(\.menuNumberColor)) {
+                            ForEach(MenuNumberColorMode.allCases) { m in Text(m.title).tag(m) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                    }
                 }
+
+                // Menu bar & panel visibility
+                cardSection(L.t("g.sectionMenubar")) {
+                    toggleRow(L.t("g.showTemp"), bind(\.showTempInMenuBar))
+                    Divider().overlay(Theme.line)
+                    toggleRow(L.t("g.showNetwork"), bind(\.showNetworkInMenuBar))
+                    Divider().overlay(Theme.line)
+                    toggleRow(L.t("g.showNetworkPanel"), bind(\.showNetworkPanel))
+                    Divider().overlay(Theme.line)
+                    toggleRow(L.t("g.showProcesses"), bind(\.showProcesses))
+                }
+                Spacer(minLength: 0)
             }
-            .padding(16).frame(maxWidth: 520, alignment: .leading)
-            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-            .shadow(color: Theme.cardShadow, radius: 7, y: 2)
-            Spacer()
+        }
+    }
+
+    private var accentSwatches: some View {
+        HStack(spacing: 10) {
+            ForEach(AccentPreset.allCases) { a in
+                Button { store.config.accent = a } label: {
+                    Circle().fill(a.swatch).frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(.white, lineWidth: cfg.accent == a ? 2 : 0))
+                        .overlay(Circle().stroke(Theme.line, lineWidth: 1))
+                        .shadow(color: a.swatch.opacity(cfg.accent == a ? 0.6 : 0), radius: 4)
+                }
+                .buttonStyle(.plain)
+                .help(a.title)
+            }
+        }
+    }
+
+    // MARK: layout helpers
+    private func bind<T>(_ kp: WritableKeyPath<OmniStatsConfig, T>) -> Binding<T> {
+        Binding(get: { store.config[keyPath: kp] }, set: { store.config[keyPath: kp] = $0 })
+    }
+    private func row<C: View>(_ label: String, @ViewBuilder _ control: () -> C) -> some View {
+        HStack { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink); Spacer(); control() }
+    }
+    private func toggleRow(_ label: String, _ b: Binding<Bool>) -> some View {
+        Toggle(isOn: b) { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink) }
+            .toggleStyle(.switch).tint(Theme.accent)
+    }
+    @ViewBuilder private func cardSection<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink3)
+            VStack(alignment: .leading, spacing: 14) { content() }
+                .padding(16).frame(maxWidth: 520, alignment: .leading)
+                .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+                .shadow(color: Theme.cardShadow, radius: 7, y: 2)
         }
     }
 }
@@ -309,41 +378,53 @@ struct AboutPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("关于").font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text("OmniStats \(updater.currentVersion) · Apple Silicon 系统监控").font(.system(size: 12)).foregroundStyle(Theme.ink3)
+                Text(L.t("a.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
+                Text(L.f("a.subtitle", updater.currentVersion)).font(.system(size: 12)).foregroundStyle(Theme.ink3)
             }
 
             aboutCard {
-                Text("OmniStats 是一套轻量的 Apple Silicon 菜单栏系统监控工具。当前提供温度监控与风扇控制:温度取自 HID 传感器,风扇经 SMC 控制,采用温度平滑 + 限斜率渐进调速,并带安全看门狗。")
+                Text(L.t("a.body"))
                     .font(.system(size: 12)).foregroundStyle(Theme.ink2).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 10) {
                     Button { updater.openRepo() } label: {
-                        Label("GitHub 仓库", systemImage: "chevron.left.forwardslash.chevron.right")
+                        Label(L.t("a.githubRepo"), systemImage: "chevron.left.forwardslash.chevron.right")
                     }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
                     Text(Repo.url).font(.system(size: 11)).foregroundStyle(Theme.ink3).textSelection(.enabled)
                 }
             }
 
             aboutCard {
-                Text("软件更新").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(L.t("a.softwareUpdate")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                 Toggle(isOn: Binding(get: { store.config.autoCheckUpdates }, set: { store.config.autoCheckUpdates = $0 })) {
-                    Text("自动检查更新(每天一次)").font(.system(size: 12)).foregroundStyle(Theme.ink)
+                    Text(L.t("a.autoCheck")).font(.system(size: 12)).foregroundStyle(Theme.ink)
                 }.toggleStyle(.switch).tint(Theme.accent)
+                Toggle(isOn: Binding(get: { store.config.autoDownloadUpdates }, set: { store.config.autoDownloadUpdates = $0 })) {
+                    Text(L.t("a.autoDownload")).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                }.toggleStyle(.switch).tint(Theme.accent).disabled(!store.config.autoCheckUpdates)
 
                 HStack(spacing: 10) {
                     Button { updater.check() } label: {
-                        HStack { if updater.checking { ProgressView().controlSize(.small) }; Text("立即检查") }
-                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).disabled(updater.checking)
-                    Text("当前版本 \(updater.currentVersion)").font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                        HStack { if updater.checking { ProgressView().controlSize(.small) }; Text(L.t("a.checkNow")) }
+                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).disabled(updater.checking || updater.downloading)
+                    Text(L.f("a.currentVersion", updater.currentVersion)).font(.system(size: 11)).foregroundStyle(Theme.ink3)
                     if !updater.status.isEmpty {
                         Text(updater.status).font(.system(size: 11)).foregroundStyle(updater.updateAvailable ? Theme.accent : Theme.ink3)
                     }
                 }
-                if updater.updateAvailable {
+                if updater.readyToInstall {
                     HStack(spacing: 10) {
-                        Button { updater.installUpdate() } label: { Label("下载并安装", systemImage: "arrow.down.circle.fill") }
+                        Button { updater.installNow() } label: { Label(L.t("a.installRestart"), systemImage: "arrow.triangle.2.circlepath") }
                             .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
-                        Button { updater.openReleasePage() } label: { Text("查看发布说明") }
+                        Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                } else if updater.updateAvailable {
+                    HStack(spacing: 10) {
+                        Button { updater.downloadAndInstall() } label: {
+                            HStack { if updater.downloading { ProgressView().controlSize(.small) }
+                                Label(L.t("a.downloadInstall"), systemImage: "arrow.down.circle.fill") }
+                        }.buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent).disabled(updater.downloading)
+                        Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
                             .buttonStyle(.bordered).controlSize(.small)
                     }
                 }
@@ -352,10 +433,10 @@ struct AboutPane: View {
             aboutCard {
                 if mon.helperAvailable {
                     Button(role: .destructive) { mon.disableControl() } label: {
-                        Label("移除风扇控制助手", systemImage: "trash")
+                        Label(L.t("a.removeHelper"), systemImage: "trash")
                     }.buttonStyle(.bordered).controlSize(.small)
                 }
-                Text("MIT License · 开源项目,欢迎 issue 与 PR。").font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                Text(L.t("a.license")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
             }
             Spacer()
         }

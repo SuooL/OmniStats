@@ -3,8 +3,44 @@ import SwiftUI
 enum AppearanceMode: String, Codable, CaseIterable, Identifiable {
     case dark, light
     var id: String { rawValue }
-    var title: String { self == .dark ? "深色" : "浅色" }
+    var title: String { self == .dark ? L.t("appearance.dark") : L.t("appearance.light") }
     var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+}
+
+// MARK: - Accent presets
+// A curated set of accent colors (dark/light pair each). Drives ring gauges,
+// progress bars, curve highlights, buttons — anywhere `Theme.accent` is read.
+enum AccentPreset: String, Codable, CaseIterable, Identifiable {
+    case teal, graphite, aurora, sunset, indigo
+    var id: String { rawValue }
+    var title: String { L.t("accent.\(rawValue)") }
+
+    // (dark, light) hex pairs.
+    private var hex: (UInt32, UInt32) {
+        switch self {
+        case .teal:     return (0x37C2C4, 0x0B8E92)
+        case .graphite: return (0x9AA7B4, 0x55606C)
+        case .aurora:   return (0x53D08A, 0x1E9E63)
+        case .sunset:   return (0xF2884A, 0xD1642A)
+        case .indigo:   return (0x7C8CF8, 0x4B5BD6)
+        }
+    }
+    func color(_ mode: AppearanceMode) -> Color { Color(hex: mode == .dark ? hex.0 : hex.1) }
+    /// Swatch color for the picker (dark variant reads well on both chrome).
+    var swatch: Color { Color(hex: hex.0) }
+}
+
+// How the menu-bar numbers (temperature / network) are tinted.
+enum MenuNumberColorMode: String, Codable, CaseIterable, Identifiable {
+    case tempGradient, accent, mono
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .tempGradient: return L.t("g.numColor.temp")
+        case .accent:       return L.t("g.numColor.accent")
+        case .mono:         return L.t("g.numColor.mono")
+        }
+    }
 }
 
 // Design tokens — a "thermal instrument" palette with dark & light variants.
@@ -12,6 +48,7 @@ enum AppearanceMode: String, Codable, CaseIterable, Identifiable {
 // during that render reflects the current theme.
 enum Theme {
     static var mode: AppearanceMode = .dark
+    static var accentPreset: AccentPreset = .teal   // set alongside `mode` at each root body
 
     private static func pick(_ dark: UInt32, _ light: UInt32) -> Color {
         Color(hex: mode == .dark ? dark : light)
@@ -23,7 +60,7 @@ enum Theme {
     static var ink:     Color { pick(0xE6EAF0, 0x1A222C) }
     static var ink2:    Color { pick(0x9BA6B4, 0x52606E) }
     static var ink3:    Color { pick(0x5E6975, 0x82909E) }
-    static var accent:  Color { pick(0x37C2C4, 0x0B8E92) }
+    static var accent:  Color { accentPreset.color(mode) }
 
     static var cardShadow: Color { Color.black.opacity(mode == .dark ? 0.22 : 0.07) }
 

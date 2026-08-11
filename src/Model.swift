@@ -10,6 +10,16 @@ func applyAppChrome(_ m: AppearanceMode) {
     }
 }
 
+// Push the config's presentation choices into the global render state. Called at
+// the top of every root view body so each render reflects the current theme,
+// accent, and language (SwiftUI re-runs the body when `ConfigStore` publishes).
+func syncPresentation(_ cfg: OmniStatsConfig) {
+    Theme.mode = cfg.appearance
+    Theme.accentPreset = cfg.accent
+    L.lang = cfg.language
+    applyAppChrome(cfg.appearance)
+}
+
 // MARK: - Privileged helper install (single native admin prompt, no Terminal)
 enum HelperInstaller {
     static let plistDst = "/Library/LaunchDaemons/com.omnistats.smcd.plist"

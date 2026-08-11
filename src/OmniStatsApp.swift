@@ -5,13 +5,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let monitor = Monitor()
     let store = ConfigStore()
     let updater = Updater()
+    let net = NetSampler()
+    let proc = ProcSampler()
     lazy var engine = Engine(monitor: monitor, store: store)
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        Theme.mode = store.config.appearance
-        applyAppChrome(store.config.appearance)
+        syncPresentation(store.config)
         _ = engine   // start the control loop
-        updater.checkAutomatically(store.config.autoCheckUpdates)
+        updater.startAutoChecks(enabled: store.config.autoCheckUpdates, autoDownload: store.config.autoDownloadUpdates)
 
         // Launch args (used for screenshots / deep-linking).
         let args = ProcessInfo.processInfo.arguments
@@ -22,10 +23,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let m = FanMode(rawValue: args[i+1]) {
             store.config.mode = m
         }
+        if let i = args.firstIndex(of: "--lang"), i + 1 < args.count,
+           let l = AppLanguage(rawValue: args[i+1]) {
+            store.config.language = l
+        }
+        if let i = args.firstIndex(of: "--section"), i + 1 < args.count,
+           let s = SettingsSection(rawValue: args[i+1]) {
+            LaunchOptions.section = s
+        }
         if args.contains("--open-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 NotificationCenter.default.post(name: .openOmniSettings, object: nil)
             }
+        }
+        if args.contains("--demo-update") {   // preview the install-and-relaunch dialog (no bundle swap)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.updater.demoPrompt() }
         }
     }
     func applicationWillTerminate(_ n: Notification) {
@@ -39,13 +51,14 @@ struct OmniStatsApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuPanel(mon: delegate.monitor, store: delegate.store, engine: delegate.engine)
+            MenuPanel(mon: delegate.monitor, store: delegate.store, engine: delegate.engine,
+                      net: delegate.net, proc: delegate.proc)
         } label: {
-            MenuLabel(mon: delegate.monitor)
+            MenuLabel(mon: delegate.monitor, store: delegate.store, net: delegate.net)
         }
         .menuBarExtraStyle(.window)
 
-        Window("OmniStats 设置", id: "settings") {
+        Window(L.t("settings.window"), id: "settings") {
             SettingsView(mon: delegate.monitor, store: delegate.store, engine: delegate.engine, updater: delegate.updater)
         }
         .windowResizability(.contentMinSize)
