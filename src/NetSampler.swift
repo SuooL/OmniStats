@@ -80,3 +80,25 @@ func humanRate(_ bytesPerSec: Double) -> String {
     if mb < 1024 { return String(format: mb < 10 ? "%.2f MB/s" : "%.1f MB/s", mb) }
     return String(format: "%.2f GB/s", mb / 1024)
 }
+
+// Fixed-width byte-rate for the menu bar: a 3-char number followed by a 4-char
+// unit ("  0  B/s", " 12 KB/s", "3.4 MB/s", "999 KB/s"), so the readout is
+// always 8 characters and never changes width as the speed crosses 2/3-digit
+// or KB/MB boundaries. Render it in a monospaced font so the padding columns
+// line up and the menu bar stops shifting.
+func menuBarRate(_ bytesPerSec: Double) -> String {
+    let units = [" B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+    var v = max(0, bytesPerSec)
+    var u = 0
+    // Promote before the number would round up to 4 digits, so it stays ≤ 3 digits.
+    while v >= 999.5 && u < units.count - 1 { v /= 1024; u += 1 }
+    let num: String
+    if u == 0 {
+        num = String(format: "%3.0f", v)          // whole bytes, 0…999
+    } else if v < 9.95 {
+        num = String(format: "%3.1f", v)          // "1.2" … "9.9"
+    } else {
+        num = String(format: "%3.0f", v)          // " 10" … "999"
+    }
+    return num + " " + units[u]
+}

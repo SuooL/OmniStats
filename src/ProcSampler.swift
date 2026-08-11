@@ -16,11 +16,19 @@ struct ProcUsage: Identifiable {
 final class ProcSampler: ObservableObject {
     @Published var top: [ProcUsage] = []
     var enabled = true                  // display gate; skips sampling work when off
+    var windowSeconds: Double = 600     // rolling-average window; 0 == instantaneous
 
     private var prevCPU: [pid_t: UInt64] = [:]
     private var prevTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
     private var timer: Timer?
     private let ncpu = Double(max(1, ProcessInfo.processInfo.activeProcessorCount))
+
+    // Per-tick CPU% by program name, kept for the longest supported window so the
+    // averaging window can be changed live without a warm-up. Averaging over the
+    // window treats a name absent from a tick as 0% for that tick.
+    private struct Sample { let t: CFAbsoluteTime; let byName: [String: Double] }
+    private var history: [Sample] = []
+    private let retention: Double = 1800   // == max selectable window (30 min)
 
     init() {
         prime()
@@ -95,8 +103,23 @@ final class ProcSampler: ObservableObject {
         }
         prevCPU = newPrev
         prevTime = now
-        let result = byName.sorted { $0.value > $1.value }.prefix(5)
+
+        // Record this tick and drop anything past the longest window we retain.
+        history.append(Sample(t: now, byName: byName))
+        let keepFrom = now - retention
+        if let first = history.first, first.t < keepFrom {
+            history.removeAll { $0.t < keepFrom }
+        }
+
+        // Average per name over the selected window (realtime → just this tick).
+        let cutoff = now - windowSeconds
+        let win = history.filter { $0.t >= cutoff }
+        let n = Double(max(1, win.count))
+        var avg: [String: Double] = [:]
+        for s in win { for (name, pct) in s.byName { avg[name, default: 0] += pct } }
+        for name in avg.keys { avg[name]! /= n }
+
+        top = avg.sorted { $0.value > $1.value }.prefix(5)
             .map { ProcUsage(name: $0.key, cpu: min($0.value, ncpu * 100)) }
-        top = result
     }
 }
