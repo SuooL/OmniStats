@@ -122,11 +122,11 @@ struct CurveEditor: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            Button { addPoint() } label: { Label("添加点", systemImage: "plus") }
-            Button { removeSelected() } label: { Label("删除点", systemImage: "minus") }
+            Button { addPoint() } label: { Label(L.t("c.addPoint"), systemImage: "plus") }
+            Button { removeSelected() } label: { Label(L.t("c.removePoint"), systemImage: "minus") }
                 .disabled(selected == nil || points.count <= 2)
             Spacer()
-            Button { points = OmniStatsConfig.defaultCurve; selected = nil } label: { Label("重置", systemImage: "arrow.counterclockwise") }
+            Button { points = OmniStatsConfig.defaultCurve; selected = nil } label: { Label(L.t("c.reset"), systemImage: "arrow.counterclockwise") }
         }
         .buttonStyle(.bordered).controlSize(.small).font(.system(size: 11)).tint(Theme.accent)
     }

@@ -10,7 +10,7 @@ enum FanMode: String, Codable, CaseIterable, Identifiable {
     case auto, manual, curve
     var id: String { rawValue }
     var title: String {
-        switch self { case .auto: return "自动"; case .manual: return "手动"; case .curve: return "曲线" }
+        switch self { case .auto: return L.t("fanmode.auto"); case .manual: return L.t("fanmode.manual"); case .curve: return L.t("fanmode.curve") }
     }
 }
 
@@ -26,6 +26,13 @@ struct CurvePoint: Codable, Identifiable, Equatable {
 struct OmniStatsConfig: Codable, Equatable {
     var fahrenheit: Bool = false
     var appearance: AppearanceMode = .dark
+    var language: AppLanguage = .system
+    var accent: AccentPreset = .teal
+    var menuNumberColor: MenuNumberColorMode = .tempGradient
+    var showTempInMenuBar: Bool = true
+    var showNetworkInMenuBar: Bool = true
+    var showNetworkPanel: Bool = true
+    var showProcesses: Bool = true
     var autoCheckUpdates: Bool = true
     var mode: FanMode = .auto
     var manualPct: Double = 40           // manual mode target (percent)
@@ -77,13 +84,22 @@ struct OmniStatsConfig: Codable, Equatable {
 // back to defaults instead of failing the whole load.
 extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
-        case fahrenheit, appearance, autoCheckUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
+        case fahrenheit, appearance, language, accent, menuNumberColor,
+             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses,
+             autoCheckUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         var cfg = OmniStatsConfig()
         cfg.fahrenheit        = try c.decodeIfPresent(Bool.self,          forKey: .fahrenheit)        ?? cfg.fahrenheit
         cfg.appearance        = try c.decodeIfPresent(AppearanceMode.self, forKey: .appearance)       ?? cfg.appearance
+        cfg.language          = try c.decodeIfPresent(AppLanguage.self,   forKey: .language)          ?? cfg.language
+        cfg.accent            = try c.decodeIfPresent(AccentPreset.self,  forKey: .accent)            ?? cfg.accent
+        cfg.menuNumberColor   = try c.decodeIfPresent(MenuNumberColorMode.self, forKey: .menuNumberColor) ?? cfg.menuNumberColor
+        cfg.showTempInMenuBar    = try c.decodeIfPresent(Bool.self, forKey: .showTempInMenuBar)    ?? cfg.showTempInMenuBar
+        cfg.showNetworkInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showNetworkInMenuBar) ?? cfg.showNetworkInMenuBar
+        cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
+        cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
         cfg.autoCheckUpdates  = try c.decodeIfPresent(Bool.self,          forKey: .autoCheckUpdates)  ?? cfg.autoCheckUpdates
         cfg.mode              = try c.decodeIfPresent(FanMode.self,        forKey: .mode)              ?? cfg.mode
         cfg.manualPct         = try c.decodeIfPresent(Double.self,        forKey: .manualPct)         ?? cfg.manualPct

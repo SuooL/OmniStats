@@ -13,7 +13,7 @@ OBJC_FLAGS := -fobjc-arc -mmacosx-version-min=13.0
 C_FRAMEWORKS := -framework Foundation -framework IOKit -framework CoreFoundation
 SWIFT_FRAMEWORKS := -framework Cocoa -framework IOKit -framework CoreFoundation
 
-.PHONY: all app helper bundle dmg clean install uninstall run test
+.PHONY: all app helper bundle dmg clean install uninstall run test icon
 
 all: bundle helper
 
@@ -53,11 +53,16 @@ bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) packaging/Info.plist packaging/com.om
 	@cp $(BUILD)/$(APP) $(DIST)/$(APP).app/Contents/MacOS/$(APP)
 	@cp $(BUILD)/$(HELPER) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
 	@cp packaging/com.omnistats.smcd.plist $(DIST)/$(APP).app/Contents/Resources/com.omnistats.smcd.plist
+	@[ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns $(DIST)/$(APP).app/Contents/Resources/AppIcon.icns || echo "warn: icons/AppIcon.icns missing (run tools/gen-icon.sh)"
 	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app >/dev/null 2>&1 || true
 	@echo "Built $(DIST)/$(APP).app"
 
 run: bundle
 	@open $(DIST)/$(APP).app
+
+# --- app icon (regenerate icons/AppIcon.icns from tools/make-icon.swift) ---
+icon:
+	@bash tools/gen-icon.sh
 
 # --- distributable .dmg (drag-to-Applications) ---
 dmg: bundle
