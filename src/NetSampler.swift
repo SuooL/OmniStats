@@ -81,11 +81,14 @@ func humanRate(_ bytesPerSec: Double) -> String {
     return String(format: "%.2f GB/s", mb / 1024)
 }
 
-// Fixed-width byte-rate for the menu bar: a 3-char number followed by a 4-char
-// unit ("  0  B/s", " 12 KB/s", "3.4 MB/s", "999 KB/s"), so the readout is
-// always 8 characters and never changes width as the speed crosses 2/3-digit
-// or KB/MB boundaries. Render it in a monospaced font so the padding columns
-// line up and the menu bar stops shifting.
+// Fixed-width byte-rate for the menu bar. Always 9 characters: a 4-cell number
+// field followed by a 4-cell unit ("   0  B/s", " 999 KB/s", "12.3 KB/s",
+// "1.23 MB/s"). The value carries 3 significant figures — decimals shrink as it
+// grows (2 below 10, 1 below 100, 0 below 1000) and the unit promotes before the
+// integer would hit 4 digits — so the number never exceeds 3 digits + 1 point.
+// The number field is right-padded to a constant 4 cells; render in a monospaced
+// font so every cell (digits, point, padding) is one column and the menu bar
+// stops shifting.
 func menuBarRate(_ bytesPerSec: Double) -> String {
     let units = [" B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
     var v = max(0, bytesPerSec)
@@ -93,12 +96,10 @@ func menuBarRate(_ bytesPerSec: Double) -> String {
     // Promote before the number would round up to 4 digits, so it stays ≤ 3 digits.
     while v >= 999.5 && u < units.count - 1 { v /= 1024; u += 1 }
     let num: String
-    if u == 0 {
-        num = String(format: "%3.0f", v)          // whole bytes, 0…999
-    } else if v < 9.95 {
-        num = String(format: "%3.1f", v)          // "1.2" … "9.9"
-    } else {
-        num = String(format: "%3.0f", v)          // " 10" … "999"
-    }
-    return num + " " + units[u]
+    if u == 0          { num = String(format: "%.0f", v) }   // whole bytes, 0…999
+    else if v < 9.995  { num = String(format: "%.2f", v) }   // "1.23"
+    else if v < 99.95  { num = String(format: "%.1f", v) }   // "12.3"
+    else               { num = String(format: "%.0f", v) }   // "123"
+    let padded = String(repeating: " ", count: max(0, 4 - num.count)) + num
+    return padded + " " + units[u]
 }
