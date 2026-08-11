@@ -20,8 +20,30 @@ jobs:
       - name: Build DMG (for humans — drag to Applications)
         run: make dmg
 
-      - name: Zip app (for the in-app updater)
+      - name: Zip app (for the Sparkle updater)
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
+
+      # Sparkle appcast, EdDSA-signed with the private key held only as a repo secret.
+      # `make` already fetched the Sparkle tools into build/sparkle/bin.
+      - name: Generate signed appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SPARKLE_ED_PRIVATE_KEY}" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is empty — run generate_keys and add it before releasing."
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/sparkle_ed_key"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$KEY_FILE"
+          mkdir -p appcast-src && cp OmniStats.zip appcast-src/
+          build/sparkle/bin/generate_appcast \
+            --ed-key-file "$KEY_FILE" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+            -o appcast.xml \
+            appcast-src
+          rm -f "$KEY_FILE"
+          echo "----- appcast.xml -----"; cat appcast.xml
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -29,4 +51,5 @@ jobs:
           files: |
             dist/OmniStats.dmg
             OmniStats.zip
+            appcast.xml
           generate_release_notes: true
