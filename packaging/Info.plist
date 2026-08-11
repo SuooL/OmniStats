@@ -18,9 +18,8 @@
     <!-- Sparkle auto-update. Appcast is published as a release asset, so the feed
          URL never touches the rate-limited api.github.com. -->
     <key>SUFeedURL</key>                 <string>https://github.com/SuooL/OmniStats/releases/latest/download/appcast.xml</string>
-    <!-- PLACEHOLDER — replace with the public key printed by `generate_keys` before
-         cutting the 1.3.0 release; must pair with the SPARKLE_ED_PRIVATE_KEY CI secret. -->
-    <key>SUPublicEDKey</key>             <string>AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</string>
+    <!-- Pairs with the SPARKLE_ED_PRIVATE_KEY CI secret (generate_appcast signs with it). -->
+    <key>SUPublicEDKey</key>             <string>04g3YilQ1puyjL30P0psFXzmJC1s54Z63PPGeXLdolo=</string>
     <key>SUEnableAutomaticChecks</key>   <true/>
     <key>SUScheduledCheckInterval</key>  <integer>21600</integer>
 </dict>
