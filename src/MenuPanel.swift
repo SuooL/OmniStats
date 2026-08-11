@@ -47,6 +47,7 @@ struct MenuPanel: View {
     var body: some View {
         syncPresentation(store.config)
         proc.enabled = store.config.showProcesses
+        proc.windowSeconds = store.config.cpuWindow.seconds
         return VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 14) {
                 Ring(value: tempFrac(mon.socMax), title: "SoC", label: fmtTemp(mon.socMax, fahrenheit: f), color: Theme.temp(Double(mon.socMax)))
@@ -205,8 +206,8 @@ struct MenuLabel: View {
         let content = MenuBarContent(
             showNet: cfg.showNetworkInMenuBar,
             showTemp: cfg.showTempInMenuBar,
-            txText: humanRate(net.txBps),
-            rxText: humanRate(net.rxBps),
+            txText: menuBarRate(net.txBps),
+            rxText: menuBarRate(net.rxBps),
             tempText: mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax),
             arrowColor: arrowColor, numberColor: numberColor, tempColor: tempColor)
         let renderer = ImageRenderer(content: content)
@@ -256,7 +257,7 @@ private struct MenuBarContent: View {
     private func netRow(_ icon: String, _ text: String) -> some View {
         HStack(spacing: 2) {
             Image(systemName: icon).font(.system(size: 7, weight: .bold)).foregroundStyle(arrowColor)
-            Text(text).font(.system(size: 8.5, weight: .regular)).monospacedDigit().foregroundStyle(numberColor)
+            Text(text).font(.system(size: 8.5, weight: .regular, design: .monospaced)).foregroundStyle(numberColor)
         }
     }
 }

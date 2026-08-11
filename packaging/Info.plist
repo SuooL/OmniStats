@@ -5,8 +5,8 @@
     <key>CFBundleName</key>              <string>OmniStats</string>
     <key>CFBundleDisplayName</key>       <string>OmniStats</string>
     <key>CFBundleIdentifier</key>        <string>io.github.suool.omnistats</string>
-    <key>CFBundleVersion</key>           <string>1.1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.1.0</string>
+    <key>CFBundleVersion</key>           <string>1.2.0</string>
+    <key>CFBundleShortVersionString</key><string>1.2.0</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleExecutable</key>        <string>OmniStats</string>
     <key>CFBundleIconFile</key>          <string>AppIcon</string>

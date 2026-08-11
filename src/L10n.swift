@@ -159,6 +159,10 @@ enum L {
         "g.showNetwork":     S(zhHans: "菜单栏显示网速", en: "Show network speed", zhHant: "選單列顯示網速", ja: "ネット速度を表示"),
         "g.showNetworkPanel": S(zhHans: "面板显示网络", en: "Network in panel", zhHant: "面板顯示網路", ja: "パネルにネットワーク"),
         "g.showProcesses":   S(zhHans: "面板显示进程占用", en: "Top processes in panel", zhHant: "面板顯示行程佔用", ja: "パネルにプロセス使用率"),
+        "g.cpuWindow":       S(zhHans: "CPU 统计窗口", en: "CPU window", zhHant: "CPU 統計視窗", ja: "CPU 統計期間"),
+        "cpuwin.realtime":   S(zhHans: "实时", en: "Live", zhHant: "即時", ja: "リアルタイム"),
+        "cpuwin.10m":        S(zhHans: "10 分钟", en: "10 min", zhHant: "10 分鐘", ja: "10 分"),
+        "cpuwin.30m":        S(zhHans: "30 分钟", en: "30 min", zhHant: "30 分鐘", ja: "30 分"),
 
         // Accent presets
         "accent.teal":     S(zhHans: "青", en: "Teal", zhHant: "青", ja: "ティール"),
