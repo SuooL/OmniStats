@@ -398,20 +398,32 @@ struct AboutPane: View {
                 Toggle(isOn: Binding(get: { store.config.autoCheckUpdates }, set: { store.config.autoCheckUpdates = $0 })) {
                     Text(L.t("a.autoCheck")).font(.system(size: 12)).foregroundStyle(Theme.ink)
                 }.toggleStyle(.switch).tint(Theme.accent)
+                Toggle(isOn: Binding(get: { store.config.autoDownloadUpdates }, set: { store.config.autoDownloadUpdates = $0 })) {
+                    Text(L.t("a.autoDownload")).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                }.toggleStyle(.switch).tint(Theme.accent).disabled(!store.config.autoCheckUpdates)
 
                 HStack(spacing: 10) {
                     Button { updater.check() } label: {
                         HStack { if updater.checking { ProgressView().controlSize(.small) }; Text(L.t("a.checkNow")) }
-                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).disabled(updater.checking)
+                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).disabled(updater.checking || updater.downloading)
                     Text(L.f("a.currentVersion", updater.currentVersion)).font(.system(size: 11)).foregroundStyle(Theme.ink3)
                     if !updater.status.isEmpty {
                         Text(updater.status).font(.system(size: 11)).foregroundStyle(updater.updateAvailable ? Theme.accent : Theme.ink3)
                     }
                 }
-                if updater.updateAvailable {
+                if updater.readyToInstall {
                     HStack(spacing: 10) {
-                        Button { updater.installUpdate() } label: { Label(L.t("a.downloadInstall"), systemImage: "arrow.down.circle.fill") }
+                        Button { updater.installNow() } label: { Label(L.t("a.installRestart"), systemImage: "arrow.triangle.2.circlepath") }
                             .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
+                        Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                } else if updater.updateAvailable {
+                    HStack(spacing: 10) {
+                        Button { updater.downloadAndInstall() } label: {
+                            HStack { if updater.downloading { ProgressView().controlSize(.small) }
+                                Label(L.t("a.downloadInstall"), systemImage: "arrow.down.circle.fill") }
+                        }.buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent).disabled(updater.downloading)
                         Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
                             .buttonStyle(.bordered).controlSize(.small)
                     }

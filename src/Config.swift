@@ -34,6 +34,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var showNetworkPanel: Bool = true
     var showProcesses: Bool = true
     var autoCheckUpdates: Bool = true
+    var autoDownloadUpdates: Bool = true   // auto-download in background, then prompt to install
     var mode: FanMode = .auto
     var manualPct: Double = 40           // manual mode target (percent)
     var curve: [CurvePoint] = defaultCurve
@@ -86,7 +87,7 @@ extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
              showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses,
-             autoCheckUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
+             autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -101,6 +102,7 @@ extension OmniStatsConfig {
         cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
         cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
         cfg.autoCheckUpdates  = try c.decodeIfPresent(Bool.self,          forKey: .autoCheckUpdates)  ?? cfg.autoCheckUpdates
+        cfg.autoDownloadUpdates = try c.decodeIfPresent(Bool.self,        forKey: .autoDownloadUpdates) ?? cfg.autoDownloadUpdates
         cfg.mode              = try c.decodeIfPresent(FanMode.self,        forKey: .mode)              ?? cfg.mode
         cfg.manualPct         = try c.decodeIfPresent(Double.self,        forKey: .manualPct)         ?? cfg.manualPct
         cfg.curve             = try c.decodeIfPresent([CurvePoint].self,  forKey: .curve)             ?? cfg.curve

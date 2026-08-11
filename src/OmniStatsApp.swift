@@ -12,7 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ n: Notification) {
         syncPresentation(store.config)
         _ = engine   // start the control loop
-        updater.checkAutomatically(store.config.autoCheckUpdates)
+        updater.startAutoChecks(enabled: store.config.autoCheckUpdates, autoDownload: store.config.autoDownloadUpdates)
 
         // Launch args (used for screenshots / deep-linking).
         let args = ProcessInfo.processInfo.arguments
@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 NotificationCenter.default.post(name: .openOmniSettings, object: nil)
             }
+        }
+        if args.contains("--demo-update") {   // preview the install-and-relaunch dialog (no bundle swap)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.updater.demoPrompt() }
         }
     }
     func applicationWillTerminate(_ n: Notification) {

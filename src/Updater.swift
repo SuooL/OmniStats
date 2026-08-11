@@ -14,31 +14,52 @@ private struct GitHubRelease: Decodable {
     let tag_name: String
     let html_url: String
     let name: String?
+    let body: String?
     struct Asset: Decodable { let name: String; let browser_download_url: String }
     let assets: [Asset]
 }
 
 // Checks GitHub Releases for a newer version and can self-replace the running
 // .app ("hot update"): download the release zip, unpack, swap the bundle, relaunch.
+//
+// Auto flow (Prowl-like, opt-in via config): a periodic background check finds an
+// update → downloads the zip silently → shows one confirm dialog ("Install &
+// Relaunch?") → hot-swaps and relaunches on confirm. Never restarts unprompted.
 final class Updater: ObservableObject {
     @Published var checking = false
+    @Published var downloading = false
     @Published var status = ""
     @Published var updateAvailable = false
+    @Published var readyToInstall = false        // downloaded, awaiting install
     @Published var latestVersion: String?
+
     private var releaseURL = Repo.releasesURL
     private var zipURL: String?
+    private var releaseNotes = ""
+    private var pendingZipPath: String?
+    private var autoDownload = true
+    private var timer: Timer?
+    var demoMode = false                          // --demo-update: show the dialog without swapping
 
     var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
-    func checkAutomatically(_ enabled: Bool) {
+    // Start background update checks: once now (throttled) and every 6h after.
+    func startAutoChecks(enabled: Bool, autoDownload: Bool) {
+        self.autoDownload = autoDownload
         guard enabled else { return }
         let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
         let now = Date().timeIntervalSince1970
-        guard now - last > 86_400 else { return }   // at most once per day
-        UserDefaults.standard.set(now, forKey: "lastUpdateCheck")
-        check(silent: true)
+        if now - last > 3600 {                    // at most hourly across relaunches
+            UserDefaults.standard.set(now, forKey: "lastUpdateCheck")
+            check(silent: true)
+        }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
+            self?.check(silent: true)
+        }
     }
 
     func check(silent: Bool = false) {
@@ -56,16 +77,77 @@ final class Updater: ObservableObject {
                 let latest = rel.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
                 self.latestVersion = latest
                 self.releaseURL = rel.html_url
+                self.releaseNotes = rel.body ?? ""
                 self.zipURL = rel.assets.first { $0.name.hasSuffix(".zip") }?.browser_download_url
                 if self.isNewer(latest, than: self.currentVersion) {
                     self.updateAvailable = true
                     self.status = L.f("u.newVersion", latest)
+                    // Background detection + opt-in → download quietly, then prompt.
+                    if silent && self.autoDownload && !self.readyToInstall && !self.downloading {
+                        self.startDownload()
+                    }
                 } else {
                     self.updateAvailable = false
                     self.status = silent ? "" : L.f("u.upToDate", self.currentVersion)
                 }
             }
         }.resume()
+    }
+
+    // Manual "download & install" button.
+    func downloadAndInstall() {
+        if readyToInstall { promptInstall() } else { startDownload() }
+    }
+    // Settings "install & relaunch" button (already downloaded → explicit, no extra prompt).
+    func installNow() { if let z = pendingZipPath { applyUpdate(zipPath: z) } }
+
+    private func startDownload() {
+        guard !downloading, !readyToInstall else { return }
+        guard let z = zipURL, let url = URL(string: z) else { openReleasePage(); return }
+        guard FileManager.default.isWritableFile(atPath: Bundle.main.bundlePath) else {
+            status = L.t("u.notWritable"); openReleasePage(); return
+        }
+        downloading = true
+        status = L.t("u.downloading")
+        URLSession.shared.downloadTask(with: url) { tmp, _, _ in
+            guard let tmp else {
+                DispatchQueue.main.async { self.downloading = false; self.status = L.t("u.downloadFailed") }
+                return
+            }
+            // ditto needs a .zip suffix
+            let zipPath = NSTemporaryDirectory() + "OmniStats-update.zip"
+            try? FileManager.default.removeItem(atPath: zipPath)
+            let moved = (try? FileManager.default.moveItem(atPath: tmp.path, toPath: zipPath)) != nil
+            DispatchQueue.main.async {
+                self.downloading = false
+                guard moved else { self.status = L.t("u.downloadFailed"); return }
+                self.pendingZipPath = zipPath
+                self.readyToInstall = true
+                self.status = L.f("u.downloaded", self.latestVersion ?? "")
+                self.promptInstall()
+            }
+        }.resume()
+    }
+
+    // The single confirmation before a hot-swap + relaunch.
+    func promptInstall() {
+        guard pendingZipPath != nil else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L.f("u.readyTitle", latestVersion ?? currentVersion)
+        var info = L.t("u.readyBody")
+        let notes = releaseNotes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty { info += "\n\n" + String(notes.prefix(500)) }
+        alert.informativeText = info
+        alert.addButton(withTitle: L.t("u.installNow"))       // default
+        alert.addButton(withTitle: L.t("u.later"))
+        alert.addButton(withTitle: L.t("a.viewReleaseNotes"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: if let z = pendingZipPath { applyUpdate(zipPath: z) }
+        case .alertThirdButtonReturn: openReleasePage()       // stays downloaded; install later from Settings
+        default: break                                        // "Later": keep it ready
+        }
     }
 
     private func isNewer(_ a: String, than b: String) -> Bool {
@@ -81,24 +163,20 @@ final class Updater: ObservableObject {
     func openReleasePage() { if let u = URL(string: releaseURL) { NSWorkspace.shared.open(u) } }
     func openRepo()        { if let u = URL(string: Repo.url) { NSWorkspace.shared.open(u) } }
 
-    // Best-effort in-place update. Falls back to opening the release page.
-    func installUpdate() {
-        guard let z = zipURL, let url = URL(string: z),
-              FileManager.default.isWritableFile(atPath: Bundle.main.bundlePath) else {
-            openReleasePage(); return
-        }
-        status = L.t("u.downloading")
-        URLSession.shared.downloadTask(with: url) { tmp, _, _ in
-            guard let tmp else { DispatchQueue.main.async { self.status = L.t("u.downloadFailed"); self.openReleasePage() }; return }
-            // ditto needs a .zip suffix
-            let zipPath = NSTemporaryDirectory() + "OmniStats-update.zip"
-            try? FileManager.default.removeItem(atPath: zipPath)
-            try? FileManager.default.moveItem(atPath: tmp.path, toPath: zipPath)
-            self.applyUpdate(zipPath: zipPath)
-        }.resume()
+    // For screenshots/testing the update dialog without touching the bundle.
+    func demoPrompt() {
+        demoMode = true
+        latestVersion = "9.9.9"
+        releaseNotes = "• Menu-bar network & top-process readouts\n• Auto hot-update\n• New app icon"
+        pendingZipPath = NSTemporaryDirectory() + "OmniStats-demo.zip"
+        readyToInstall = true
+        updateAvailable = true
+        promptInstall()
     }
 
+    // Best-effort in-place update. Falls back to opening the release page.
     private func applyUpdate(zipPath: String) {
+        if demoMode { status = "(demo) install & relaunch"; return }
         let bundle = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
         let work = NSTemporaryDirectory() + "OmniStats-update-x"
