@@ -1,18 +1,22 @@
 import SwiftUI
 import AppKit
+import Sparkle
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let monitor = Monitor()
     let store = ConfigStore()
-    let updater = Updater()
     let net = NetSampler()
     let proc = ProcSampler()
     lazy var engine = Engine(monitor: monitor, store: store)
 
+    // Sparkle: start the updater immediately; scheduled checks + UI are driven by
+    // the SU* keys in Info.plist. `updater` is a thin SwiftUI wrapper for Settings.
+    private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    lazy var updater = Updater(updater: updaterController.updater)
+
     func applicationDidFinishLaunching(_ n: Notification) {
         syncPresentation(store.config)
         _ = engine   // start the control loop
-        updater.startAutoChecks(enabled: store.config.autoCheckUpdates, autoDownload: store.config.autoDownloadUpdates)
 
         // Launch args (used for screenshots / deep-linking).
         let args = ProcessInfo.processInfo.arguments
@@ -35,9 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 NotificationCenter.default.post(name: .openOmniSettings, object: nil)
             }
-        }
-        if args.contains("--demo-update") {   // preview the install-and-relaunch dialog (no bundle swap)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.updater.demoPrompt() }
         }
     }
     func applicationWillTerminate(_ n: Notification) {

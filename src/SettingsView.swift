@@ -401,38 +401,19 @@ struct AboutPane: View {
 
             aboutCard {
                 Text(L.t("a.softwareUpdate")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                Toggle(isOn: Binding(get: { store.config.autoCheckUpdates }, set: { store.config.autoCheckUpdates = $0 })) {
+                Toggle(isOn: Binding(get: { updater.automaticallyChecksForUpdates }, set: { updater.automaticallyChecksForUpdates = $0 })) {
                     Text(L.t("a.autoCheck")).font(.system(size: 12)).foregroundStyle(Theme.ink)
                 }.toggleStyle(.switch).tint(Theme.accent)
-                Toggle(isOn: Binding(get: { store.config.autoDownloadUpdates }, set: { store.config.autoDownloadUpdates = $0 })) {
+                Toggle(isOn: Binding(get: { updater.automaticallyDownloadsUpdates }, set: { updater.automaticallyDownloadsUpdates = $0 })) {
                     Text(L.t("a.autoDownload")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-                }.toggleStyle(.switch).tint(Theme.accent).disabled(!store.config.autoCheckUpdates)
+                }.toggleStyle(.switch).tint(Theme.accent).disabled(!updater.automaticallyChecksForUpdates)
 
+                // Sparkle presents its own found-update / download / install dialogs.
                 HStack(spacing: 10) {
-                    Button { updater.check() } label: {
-                        HStack { if updater.checking { ProgressView().controlSize(.small) }; Text(L.t("a.checkNow")) }
-                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent).disabled(updater.checking || updater.downloading)
+                    Button { updater.checkForUpdates() } label: { Text(L.t("a.checkNow")) }
+                        .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                        .disabled(!updater.canCheckForUpdates)
                     Text(L.f("a.currentVersion", updater.currentVersion)).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-                    if !updater.status.isEmpty {
-                        Text(updater.status).font(.system(size: 11)).foregroundStyle(updater.updateAvailable ? Theme.accent : Theme.ink3)
-                    }
-                }
-                if updater.readyToInstall {
-                    HStack(spacing: 10) {
-                        Button { updater.installNow() } label: { Label(L.t("a.installRestart"), systemImage: "arrow.triangle.2.circlepath") }
-                            .buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent)
-                        Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
-                } else if updater.updateAvailable {
-                    HStack(spacing: 10) {
-                        Button { updater.downloadAndInstall() } label: {
-                            HStack { if updater.downloading { ProgressView().controlSize(.small) }
-                                Label(L.t("a.downloadInstall"), systemImage: "arrow.down.circle.fill") }
-                        }.buttonStyle(.borderedProminent).controlSize(.small).tint(Theme.accent).disabled(updater.downloading)
-                        Button { updater.openReleasePage() } label: { Text(L.t("a.viewReleaseNotes")) }
-                            .buttonStyle(.bordered).controlSize(.small)
-                    }
                 }
             }
 
