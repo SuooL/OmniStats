@@ -13,3 +13,7 @@ dist/
 *.swp
 *.dmg
 *.zip
+
+# Secrets — never commit signing keys (Sparkle EdDSA private key, etc.)
+*.pem
+sparkle_private_key*
