@@ -13,7 +13,16 @@ OBJC_FLAGS := -fobjc-arc -mmacosx-version-min=13.0
 C_FRAMEWORKS := -framework Foundation -framework IOKit -framework CoreFoundation
 SWIFT_FRAMEWORKS := -framework Cocoa -framework IOKit -framework CoreFoundation
 
-.PHONY: all app helper bundle dmg clean install uninstall run test icon
+# --- Sparkle auto-update framework (fetched at build, not committed) ---
+# Pinned version + checksum; the tarball also carries the bin/ tools (generate_appcast,
+# sign_update, generate_keys) that CI uses to sign the appcast.
+SPARKLE_VER := 2.9.5
+SPARKLE_SHA := 015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc
+SPARKLE_URL := https://github.com/sparkle-project/Sparkle/releases/download/$(SPARKLE_VER)/Sparkle-$(SPARKLE_VER).tar.xz
+SPARKLE_DIR := $(BUILD)/sparkle
+SPARKLE_FW  := $(SPARKLE_DIR)/Sparkle.framework
+
+.PHONY: all app helper bundle dmg clean install uninstall run test icon sparkle
 
 all: bundle helper
 
@@ -27,13 +36,26 @@ $(BUILD)/sensors.o: $(SRC)/sensors.m $(SRC)/sensors.h $(SRC)/smc.h | $(BUILD)
 $(BUILD)/control.o: $(SRC)/control.m $(SRC)/control.h | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) -c $(SRC)/control.m -o $@
 
+# --- Sparkle framework: download + verify checksum + extract ---
+$(SPARKLE_FW): | $(BUILD)
+	@echo "Fetching Sparkle $(SPARKLE_VER)…"
+	@mkdir -p $(SPARKLE_DIR)
+	@curl -sL -o $(BUILD)/sparkle.tar.xz "$(SPARKLE_URL)"
+	@echo "$(SPARKLE_SHA)  $(BUILD)/sparkle.tar.xz" | shasum -a 256 -c -
+	@tar -xJf $(BUILD)/sparkle.tar.xz -C $(SPARKLE_DIR)
+	@touch $(SPARKLE_FW)
+
+sparkle: $(SPARKLE_FW)
+
 # --- SwiftUI menu-bar app binary ---
 SWIFT_SRCS := $(wildcard $(SRC)/*.swift)
-$(BUILD)/$(APP): $(SWIFT_SRCS) $(BUILD)/sensors.o $(BUILD)/control.o $(SRC)/bridge.h | $(BUILD)
+$(BUILD)/$(APP): $(SWIFT_SRCS) $(BUILD)/sensors.o $(BUILD)/control.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
 	$(SWIFTC) -O -parse-as-library $(SWIFT_SRCS) \
 	  $(BUILD)/sensors.o $(BUILD)/control.o \
 	  -import-objc-header $(SRC)/bridge.h \
-	  $(SWIFT_FRAMEWORKS) -o $@
+	  -F $(SPARKLE_DIR) -framework Sparkle \
+	  $(SWIFT_FRAMEWORKS) \
+	  -Xlinker -rpath -Xlinker @executable_path/../Frameworks -o $@
 
 app: $(BUILD)/$(APP)
 
@@ -46,14 +68,18 @@ helper: $(BUILD)/$(HELPER)
 # --- .app bundle (ad-hoc signed) ---
 # The privileged helper + LaunchDaemon plist are embedded in Contents/Resources so
 # the app can self-install them via a single native admin prompt (no Terminal needed).
-bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) packaging/Info.plist packaging/com.omnistats.smcd.plist
+bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
 	@rm -rf $(DIST)/$(APP).app
-	@mkdir -p $(DIST)/$(APP).app/Contents/MacOS $(DIST)/$(APP).app/Contents/Resources
+	@mkdir -p $(DIST)/$(APP).app/Contents/MacOS $(DIST)/$(APP).app/Contents/Resources $(DIST)/$(APP).app/Contents/Frameworks
 	@cp packaging/Info.plist $(DIST)/$(APP).app/Contents/Info.plist
 	@cp $(BUILD)/$(APP) $(DIST)/$(APP).app/Contents/MacOS/$(APP)
 	@cp $(BUILD)/$(HELPER) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
 	@cp packaging/com.omnistats.smcd.plist $(DIST)/$(APP).app/Contents/Resources/com.omnistats.smcd.plist
 	@[ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns $(DIST)/$(APP).app/Contents/Resources/AppIcon.icns || echo "warn: icons/AppIcon.icns missing (run tools/gen-icon.sh)"
+	@# Embed Sparkle (ditto preserves the framework's symlinks + its existing signature).
+	@ditto $(SPARKLE_FW) $(DIST)/$(APP).app/Contents/Frameworks/Sparkle.framework
+	@# Ad-hoc sign only the outer app; Sparkle keeps its own signature (no hardened
+	@# runtime here, so a differently-signed framework still loads).
 	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app >/dev/null 2>&1 || true
 	@echo "Built $(DIST)/$(APP).app"
 
