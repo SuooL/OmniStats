@@ -325,6 +325,12 @@ struct GeneralPane: View {
                     toggleRow(L.t("g.showNetworkPanel"), bind(\.showNetworkPanel))
                     Divider().overlay(Theme.line)
                     toggleRow(L.t("g.showProcesses"), bind(\.showProcesses))
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.cpuWindow")) {
+                        Picker("", selection: bind(\.cpuWindow)) {
+                            ForEach(CPUWindow.allCases) { w in Text(w.title).tag(w) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                    }
                 }
                 Spacer(minLength: 0)
             }

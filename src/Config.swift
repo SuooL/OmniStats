@@ -14,6 +14,23 @@ enum FanMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// Averaging window for the top-CPU process list. Instantaneous sampling flaps
+// tick-to-tick; a rolling window makes the readout represent sustained load.
+enum CPUWindow: String, Codable, CaseIterable, Identifiable {
+    case realtime, tenMin, thirtyMin
+    var id: String { rawValue }
+    var seconds: Double {
+        switch self { case .realtime: return 0; case .tenMin: return 600; case .thirtyMin: return 1800 }
+    }
+    var title: String {
+        switch self {
+        case .realtime:  return L.t("cpuwin.realtime")
+        case .tenMin:    return L.t("cpuwin.10m")
+        case .thirtyMin: return L.t("cpuwin.30m")
+        }
+    }
+}
+
 // A point on the temperature→speed curve. Y is a fan-agnostic percent (0–100)
 // mapped per fan onto [min,max] rpm.
 struct CurvePoint: Codable, Identifiable, Equatable {
@@ -33,6 +50,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var showNetworkInMenuBar: Bool = true
     var showNetworkPanel: Bool = true
     var showProcesses: Bool = true
+    var cpuWindow: CPUWindow = .tenMin   // averaging window for the top-CPU list
     var autoCheckUpdates: Bool = true
     var autoDownloadUpdates: Bool = true   // auto-download in background, then prompt to install
     var mode: FanMode = .auto
@@ -86,7 +104,7 @@ struct OmniStatsConfig: Codable, Equatable {
 extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
-             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses,
+             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, cpuWindow,
              autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
     init(from decoder: Decoder) throws {
@@ -101,6 +119,7 @@ extension OmniStatsConfig {
         cfg.showNetworkInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showNetworkInMenuBar) ?? cfg.showNetworkInMenuBar
         cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
         cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
+        cfg.cpuWindow            = try c.decodeIfPresent(CPUWindow.self, forKey: .cpuWindow)         ?? cfg.cpuWindow
         cfg.autoCheckUpdates  = try c.decodeIfPresent(Bool.self,          forKey: .autoCheckUpdates)  ?? cfg.autoCheckUpdates
         cfg.autoDownloadUpdates = try c.decodeIfPresent(Bool.self,        forKey: .autoDownloadUpdates) ?? cfg.autoDownloadUpdates
         cfg.mode              = try c.decodeIfPresent(FanMode.self,        forKey: .mode)              ?? cfg.mode
