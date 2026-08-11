@@ -44,14 +44,14 @@ final class Updater: ObservableObject {
     func check(silent: Bool = false) {
         guard !checking else { return }
         checking = true
-        if !silent { status = "正在检查更新…" }
+        if !silent { status = L.t("u.checking") }
         var req = URLRequest(url: URL(string: Repo.apiLatest)!)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: req) { data, _, _ in
             DispatchQueue.main.async {
                 self.checking = false
                 guard let data, let rel = try? JSONDecoder().decode(GitHubRelease.self, from: data) else {
-                    self.status = silent ? "" : "暂无发布或检查失败"; return
+                    self.status = silent ? "" : L.t("u.noRelease"); return
                 }
                 let latest = rel.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
                 self.latestVersion = latest
@@ -59,10 +59,10 @@ final class Updater: ObservableObject {
                 self.zipURL = rel.assets.first { $0.name.hasSuffix(".zip") }?.browser_download_url
                 if self.isNewer(latest, than: self.currentVersion) {
                     self.updateAvailable = true
-                    self.status = "发现新版本 \(latest)"
+                    self.status = L.f("u.newVersion", latest)
                 } else {
                     self.updateAvailable = false
-                    self.status = silent ? "" : "已是最新版本 (\(self.currentVersion))"
+                    self.status = silent ? "" : L.f("u.upToDate", self.currentVersion)
                 }
             }
         }.resume()
@@ -87,9 +87,9 @@ final class Updater: ObservableObject {
               FileManager.default.isWritableFile(atPath: Bundle.main.bundlePath) else {
             openReleasePage(); return
         }
-        status = "正在下载更新…"
+        status = L.t("u.downloading")
         URLSession.shared.downloadTask(with: url) { tmp, _, _ in
-            guard let tmp else { DispatchQueue.main.async { self.status = "下载失败"; self.openReleasePage() }; return }
+            guard let tmp else { DispatchQueue.main.async { self.status = L.t("u.downloadFailed"); self.openReleasePage() }; return }
             // ditto needs a .zip suffix
             let zipPath = NSTemporaryDirectory() + "OmniStats-update.zip"
             try? FileManager.default.removeItem(atPath: zipPath)
@@ -116,11 +116,11 @@ final class Updater: ObservableObject {
         """
         let sh = NSTemporaryDirectory() + "OmniStats-update.sh"
         try? script.write(toFile: sh, atomically: true, encoding: .utf8)
-        status = "正在安装,应用即将重启…"
+        status = L.t("u.installing")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [sh]
-        do { try p.run() } catch { status = "安装失败"; openReleasePage(); return }
+        do { try p.run() } catch { status = L.t("u.installFailed"); openReleasePage(); return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
     }
 }
