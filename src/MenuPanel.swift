@@ -27,7 +27,9 @@ struct MenuPanel: View {
     let engine: Engine
     @ObservedObject var net: NetSampler
     @ObservedObject var proc: ProcSampler
+    @ObservedObject var netProc: NetProcSampler
     @Environment(\.openWindow) private var openWindow
+    @State private var netExpanded = false
 
     private var f: Bool { store.config.fahrenheit }
     private func tempFrac(_ c: Float) -> Double { c.isNaN ? 0 : Double(max(0, min(100, c)) / 100) }
@@ -48,34 +50,29 @@ struct MenuPanel: View {
         syncPresentation(store.config)
         proc.enabled = store.config.showProcesses
         proc.windowSeconds = store.config.cpuWindow.seconds
+        netProc.enabled = store.config.showNetworkPanel && netExpanded
         return VStack(alignment: .leading, spacing: 13) {
-            HStack(spacing: 14) {
-                Ring(value: tempFrac(mon.socMax), title: "SoC", label: fmtTemp(mon.socMax, fahrenheit: f), color: Theme.temp(Double(mon.socMax)))
-                Ring(value: tempFrac(mon.ssd), title: "SSD", label: fmtTemp(mon.ssd, fahrenheit: f), color: Theme.temp(Double(mon.ssd)))
-                if mon.fanCount > 0 {
-                    Ring(value: fanFrac, title: "FANS", label: String(format: "%.0f%%", fanFrac*100), color: Theme.accent)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
+            topCluster
 
             divider
             telem(L.t("m.socAvg"), fmtTemp(mon.socAvg, fahrenheit: f), Theme.temp(Double(mon.socAvg)))
             telem(L.t("m.battery"), fmtTemp(mon.battery, fahrenheit: f), Theme.temp(Double(mon.battery)))
-            if !mon.power.isNaN { telem(L.t("m.power"), String(format: "%.1f W", mon.power), Theme.ink) }
-            if !mon.volt.isNaN { telem(L.t("m.voltage"), String(format: "%.2f V", mon.volt), Theme.ink) }
-
-            if store.config.showNetworkPanel { networkSection }
+            if !mon.power.isNaN { telem(L.t("m.power"), String(format: "%.1f W", mon.power), Theme.accent) }
+            if !mon.volt.isNaN { telem(L.t("m.voltage"), String(format: "%.2f V", mon.volt), Theme.accent) }
 
             if mon.fanCount > 0 {
                 divider
                 ForEach(0..<mon.fanCount, id: \.self) { i in
                     let rpm = i < mon.fanRPM.count && !mon.fanRPM[i].isNaN ? "\(Int(mon.fanRPM[i])) rpm" : "—"
                     let pct = fanPct(i).map { String(format: " · %.0f%%", $0) } ?? ""
-                    telem(fanName(i), rpm + pct, Theme.ink)
+                    telem(fanName(i), rpm + pct, Theme.accent)
                 }
             }
 
             if store.config.showProcesses { processSection }
+
+            // Network sits below the CPU/process section; the row expands in place.
+            if store.config.showNetworkPanel { networkSection }
 
             if !mon.helperAvailable && mon.fanCount > 0 {
                 Button { mon.enableControl() } label: {
@@ -101,31 +98,92 @@ struct MenuPanel: View {
         .padding(14).frame(width: 300)
         .background(Theme.surface)
         .environment(\.colorScheme, store.config.appearance.colorScheme)
+        // Collapse (and stop the nettop child) when the popover closes; `body`
+        // isn't guaranteed to re-run on dismissal, so tear down directly here.
+        .onDisappear { netExpanded = false; netProc.enabled = false }
     }
 
-    // Live network: upload/download for the most active interface.
-    private var networkSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            divider
-            HStack(spacing: 6) {
-                Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
-                if !net.iface.isEmpty {
-                    Text(net.iface).font(.system(size: 10)).foregroundStyle(Theme.ink3)
-                }
-                Spacer()
+    // Top SoC/SSD/Fans cluster: ring gauges or time-series, per config.
+    private var topCluster: some View {
+        let style = store.config.topWidgetStyle
+        let win = store.config.topWidgetWindow.seconds
+        let now = CFAbsoluteTimeGetCurrent()
+        return HStack(spacing: style.isChart ? 8 : 14) {
+            MetricWidget(style: style, title: "SoC", label: fmtTemp(mon.socMax, fahrenheit: f),
+                         color: Theme.temp(Double(mon.socMax)), ringValue: tempFrac(mon.socMax),
+                         samples: mon.socHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
+            MetricWidget(style: style, title: "SSD", label: fmtTemp(mon.ssd, fahrenheit: f),
+                         color: Theme.temp(Double(mon.ssd)), ringValue: tempFrac(mon.ssd),
+                         samples: mon.ssdHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
+            if mon.fanCount > 0 {
+                MetricWidget(style: style, title: "FANS", label: String(format: "%.0f%%", fanFrac*100),
+                             color: Theme.accent, ringValue: fanFrac,
+                             samples: mon.fanHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
             }
-            HStack(spacing: 16) {
-                netStat("arrow.up", net.txBps)
-                netStat("arrow.down", net.rxBps)
-                Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    // Network: a tappable row (upload/download for the most active interface).
+    // Tapping expands, in place, a 1h up/down history chart + the top network
+    // apps; tapping again collapses. No separate window.
+    private var networkSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            divider
+            Button { withAnimation(.easeInOut(duration: 0.18)) { netExpanded.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                    if !net.iface.isEmpty {
+                        Text(net.iface).font(.system(size: 10)).foregroundStyle(Theme.ink3)
+                    }
+                    Spacer()
+                    netStat("arrow.up", net.txBps)
+                    netStat("arrow.down", net.rxBps)
+                    Image(systemName: netExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9)).foregroundStyle(Theme.ink3)
+                }
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+
+            if netExpanded {
+                DualSparkline(up: net.txHistory.samples, down: net.rxHistory.samples,
+                              windowSeconds: 3600, now: CFAbsoluteTimeGetCurrent(),
+                              kind: store.config.netChartKind)
+                netProcList
             }
         }
     }
     private func netStat(_ icon: String, _ rate: Double) -> some View {
         HStack(spacing: 4) {
-            Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.accent)
-            Text(humanRate(rate)).font(Theme.telemetry(12)).foregroundStyle(Theme.ink)
+            Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.speed(rate))
+            Text(humanRate(rate)).font(Theme.telemetry(12)).foregroundStyle(Theme.speed(rate))
         }
+    }
+
+    // Top processes by network throughput, merged per app (nettop-backed).
+    private var netProcList: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(L.t("m.netProcHeader")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
+            if netProc.top.isEmpty {
+                Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            } else {
+                ForEach(netProc.top) { p in
+                    HStack(spacing: 6) {
+                        Text(p.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        netMini("arrow.up", p.txBps)
+                        netMini("arrow.down", p.rxBps)
+                    }
+                }
+            }
+        }
+    }
+    private func netMini(_ icon: String, _ rate: Double) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: icon).font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.speed(rate))
+            Text(humanRate(rate)).font(Theme.telemetry(10)).foregroundStyle(Theme.speed(rate))
+        }.frame(width: 74, alignment: .trailing)
     }
 
     // Top CPU processes, merged per program.

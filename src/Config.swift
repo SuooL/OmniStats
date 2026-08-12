@@ -31,6 +31,44 @@ enum CPUWindow: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// How the top SoC/SSD/Fans cluster is drawn: instantaneous ring gauge, or a
+// rolling time-series (area line / bars) over `topWidgetWindow`.
+enum TopWidgetStyle: String, Codable, CaseIterable, Identifiable {
+    case ring, line, bars
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .ring: return L.t("chart.style.ring")
+        case .line: return L.t("chart.style.line")
+        case .bars: return L.t("chart.style.bars")
+        }
+    }
+    var isChart: Bool { self != .ring }
+}
+
+// How far back the top-widget time-series charts look.
+enum ChartWindow: String, Codable, CaseIterable, Identifiable {
+    case fiveMin, thirtyMin, oneHour
+    var id: String { rawValue }
+    var seconds: Double {
+        switch self { case .fiveMin: return 300; case .thirtyMin: return 1800; case .oneHour: return 3600 }
+    }
+    var title: String {
+        switch self {
+        case .fiveMin:   return L.t("chart.win.5m")
+        case .thirtyMin: return L.t("chart.win.30m")
+        case .oneHour:   return L.t("chart.win.1h")
+        }
+    }
+}
+
+// Line (area) vs bars — used by the expanded network history chart.
+enum ChartKind: String, Codable, CaseIterable, Identifiable {
+    case line, bars
+    var id: String { rawValue }
+    var title: String { self == .line ? L.t("chart.style.line") : L.t("chart.style.bars") }
+}
+
 // A point on the temperature→speed curve. Y is a fan-agnostic percent (0–100)
 // mapped per fan onto [min,max] rpm.
 struct CurvePoint: Codable, Identifiable, Equatable {
@@ -51,6 +89,9 @@ struct OmniStatsConfig: Codable, Equatable {
     var showNetworkPanel: Bool = true
     var showProcesses: Bool = true
     var cpuWindow: CPUWindow = .tenMin   // averaging window for the top-CPU list
+    var topWidgetStyle: TopWidgetStyle = .ring     // SoC/SSD/Fans cluster: ring gauge vs time-series
+    var topWidgetWindow: ChartWindow = .fiveMin    // history span for the top-widget charts
+    var netChartKind: ChartKind = .line            // expanded network 1h chart: line vs bars
     var autoCheckUpdates: Bool = true
     var autoDownloadUpdates: Bool = true   // auto-download in background, then prompt to install
     var mode: FanMode = .auto
@@ -105,6 +146,7 @@ extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
              showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, cpuWindow,
+             topWidgetStyle, topWidgetWindow, netChartKind,
              autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
     init(from decoder: Decoder) throws {
@@ -120,6 +162,9 @@ extension OmniStatsConfig {
         cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
         cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
         cfg.cpuWindow            = try c.decodeIfPresent(CPUWindow.self, forKey: .cpuWindow)         ?? cfg.cpuWindow
+        cfg.topWidgetStyle       = try c.decodeIfPresent(TopWidgetStyle.self, forKey: .topWidgetStyle) ?? cfg.topWidgetStyle
+        cfg.topWidgetWindow      = try c.decodeIfPresent(ChartWindow.self, forKey: .topWidgetWindow) ?? cfg.topWidgetWindow
+        cfg.netChartKind         = try c.decodeIfPresent(ChartKind.self,  forKey: .netChartKind)     ?? cfg.netChartKind
         cfg.autoCheckUpdates  = try c.decodeIfPresent(Bool.self,          forKey: .autoCheckUpdates)  ?? cfg.autoCheckUpdates
         cfg.autoDownloadUpdates = try c.decodeIfPresent(Bool.self,        forKey: .autoDownloadUpdates) ?? cfg.autoDownloadUpdates
         cfg.mode              = try c.decodeIfPresent(FanMode.self,        forKey: .mode)              ?? cfg.mode
