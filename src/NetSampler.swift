@@ -11,6 +11,10 @@ final class NetSampler: ObservableObject {
     @Published var txBps: Double = 0     // upload,   bytes/sec (EMA-smoothed)
     @Published var iface: String = ""
 
+    // 1h rolling history for the expanded network panel (native 1s tick).
+    let rxHistory = MetricSeries(retention: 3600)
+    let txHistory = MetricSeries(retention: 3600)
+
     private struct Counter { var rx: UInt32; var tx: UInt32 }
     private var prev: [String: Counter] = [:]
     private var prevTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
@@ -67,6 +71,8 @@ final class NetSampler: ObservableObject {
         rxBps += alpha * (max(0, bestRx) - rxBps)
         txBps += alpha * (max(0, bestTx) - txBps)
         iface = chosen
+        rxHistory.record(rxBps, at: now)
+        txHistory.record(txBps, at: now)
     }
 }
 

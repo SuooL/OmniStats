@@ -77,19 +77,39 @@ enum Theme {
         (90, (217/255.0, 48/255.0, 58/255.0)),
     ]
     private static var stops: [(Double, (Double, Double, Double))] { mode == .dark ? darkStops : lightStops }
-    static func temp(_ c: Double) -> Color {
-        if c.isNaN { return ink3 }
+
+    // Interpolate the green→amber→red thermal gradient at an arbitrary key value.
+    // Both `temp` (keyed on °C) and `speed` (keyed on a 0–100 intensity) route
+    // through here so temperature and network share one visual language.
+    private static func gradient(_ key: Double) -> Color {
         let s = stops
-        if c <= s.first!.0 { let r = s.first!.1; return Color(red: r.0, green: r.1, blue: r.2) }
-        if c >= s.last!.0  { let r = s.last!.1;  return Color(red: r.0, green: r.1, blue: r.2) }
+        if key <= s.first!.0 { let r = s.first!.1; return Color(red: r.0, green: r.1, blue: r.2) }
+        if key >= s.last!.0  { let r = s.last!.1;  return Color(red: r.0, green: r.1, blue: r.2) }
         for i in 0..<s.count-1 {
             let (t0, c0) = s[i], (t1, c1) = s[i+1]
-            if c >= t0 && c <= t1 {
-                let f = (c - t0) / (t1 - t0)
+            if key >= t0 && key <= t1 {
+                let f = (key - t0) / (t1 - t0)
                 return Color(red: c0.0 + (c1.0-c0.0)*f, green: c0.1 + (c1.1-c0.1)*f, blue: c0.2 + (c1.2-c0.2)*f)
             }
         }
         return accent
+    }
+
+    static func temp(_ c: Double) -> Color {
+        if c.isNaN { return ink3 }
+        return gradient(c)
+    }
+
+    // Network-rate color, same thermal gradient as temperature. Maps bytes/sec
+    // onto the gradient's 0–100 key via a log scale: ~1 KB/s → cool (green),
+    // ~100 MB/s → hot (red), so slow traffic reads calm and bursts read hot.
+    static func speed(_ bytesPerSec: Double) -> Color {
+        let b = max(1, bytesPerSec)
+        let intensity = min(100, max(0, (log10(b) - 3) / (8 - 3) * 100))   // 1e3..1e8 B/s → 0..100
+        // Rescale so the gradient's own [35,90] key range maps to [0,100] intensity.
+        let s = stops
+        let key = s.first!.0 + intensity / 100 * (s.last!.0 - s.first!.0)
+        return gradient(key)
     }
 
     static func telemetry(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {

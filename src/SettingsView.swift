@@ -316,6 +316,29 @@ struct GeneralPane: View {
                     }
                 }
 
+                // Charts / visualization
+                cardSection(L.t("g.sectionCharts")) {
+                    row(L.t("g.topWidgetStyle")) {
+                        Picker("", selection: bind(\.topWidgetStyle)) {
+                            ForEach(TopWidgetStyle.allCases) { s in Text(s.title).tag(s) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                    }
+                    if cfg.topWidgetStyle.isChart {
+                        Divider().overlay(Theme.line)
+                        row(L.t("g.topWidgetWindow")) {
+                            Picker("", selection: bind(\.topWidgetWindow)) {
+                                ForEach(ChartWindow.allCases) { w in Text(w.title).tag(w) }
+                            }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                        }
+                    }
+                    Divider().overlay(Theme.line)
+                    row(L.t("g.netChartKind")) {
+                        Picker("", selection: bind(\.netChartKind)) {
+                            ForEach(ChartKind.allCases) { k in Text(k.title).tag(k) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
+                    }
+                }
+
                 // Menu bar & panel visibility
                 cardSection(L.t("g.sectionMenubar")) {
                     toggleRow(L.t("g.showTemp"), bind(\.showTempInMenuBar))
