@@ -1,5 +1,30 @@
 import Foundation
 
+// Resolve a PID to a display name, merging all "Foo.app/…" helpers into the
+// top-level bundle name "Foo" (so e.g. Chrome's helpers roll up into "Chrome").
+// Shared by ProcSampler (CPU) and NetProcSampler (network).
+func appDisplayName(_ pid: pid_t) -> String {
+    var buf = [CChar](repeating: 0, count: 4096)   // 4 * MAXPATHLEN; macro not importable to Swift
+    if proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 {
+        let path = String(cString: buf)
+        if let r = path.range(of: ".app/") {
+            let before = path[..<r.lowerBound]
+            if let slash = before.lastIndex(of: "/") {
+                return String(before[before.index(after: slash)...])
+            }
+            return String(before)
+        }
+        return (path as NSString).lastPathComponent
+    }
+    // Fallback to the (truncated) accounting name, e.g. kernel_task.
+    var nameBuf = [CChar](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
+    if proc_name(pid, &nameBuf, UInt32(nameBuf.count)) > 0 {
+        let n = String(cString: nameBuf)
+        if !n.isEmpty { return n }
+    }
+    return "pid \(pid)"
+}
+
 struct ProcUsage: Identifiable {
     let id = UUID()
     let name: String
@@ -57,28 +82,7 @@ final class ProcSampler: ObservableObject {
         return info.ri_user_time &+ info.ri_system_time
     }
 
-    private func displayName(_ pid: pid_t) -> String {
-        var buf = [CChar](repeating: 0, count: 4096)   // 4 * MAXPATHLEN; macro not importable to Swift
-        if proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 {
-            let path = String(cString: buf)
-            // Merge all "Foo.app/…" helpers into the top-level bundle name "Foo".
-            if let r = path.range(of: ".app/") {
-                let before = path[..<r.lowerBound]
-                if let slash = before.lastIndex(of: "/") {
-                    return String(before[before.index(after: slash)...])
-                }
-                return String(before)
-            }
-            return (path as NSString).lastPathComponent
-        }
-        // Fallback to the (truncated) accounting name, e.g. kernel_task.
-        var nameBuf = [CChar](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
-        if proc_name(pid, &nameBuf, UInt32(nameBuf.count)) > 0 {
-            let n = String(cString: nameBuf)
-            if !n.isEmpty { return n }
-        }
-        return "pid \(pid)"
-    }
+    private func displayName(_ pid: pid_t) -> String { appDisplayName(pid) }
 
     private func prime() {
         var m: [pid_t: UInt64] = [:]

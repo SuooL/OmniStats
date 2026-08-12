@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let store = ConfigStore()
     let net = NetSampler()
     let proc = ProcSampler()
+    let netProc = NetProcSampler()
     lazy var engine = Engine(monitor: monitor, store: store)
 
     // Sparkle: start the updater immediately; scheduled checks + UI are driven by
@@ -53,7 +54,7 @@ struct OmniStatsApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuPanel(mon: delegate.monitor, store: delegate.store, engine: delegate.engine,
-                      net: delegate.net, proc: delegate.proc)
+                      net: delegate.net, proc: delegate.proc, netProc: delegate.netProc)
         } label: {
             MenuLabel(mon: delegate.monitor, store: delegate.store, net: delegate.net)
         }

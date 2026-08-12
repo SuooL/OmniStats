@@ -89,6 +89,16 @@ enum L {
         "m.network":  S(zhHans: "网络", en: "Network", zhHant: "網路", ja: "ネットワーク"),
         "m.procHeader": S(zhHans: "CPU 占用最高", en: "Top CPU", zhHant: "CPU 佔用最高", ja: "CPU 使用率トップ"),
         "m.idle":     S(zhHans: "空闲", en: "Idle", zhHant: "閒置", ja: "アイドル"),
+        "m.netProcHeader": S(zhHans: "网速占用最高", en: "Top network", zhHant: "網速佔用最高", ja: "通信量トップ"),
+        "m.netIdle":  S(zhHans: "暂无网络活动", en: "No traffic", zhHant: "暫無網路活動", ja: "通信なし"),
+
+        // Charts / visualization
+        "chart.style.ring": S(zhHans: "环状", en: "Ring", zhHant: "環狀", ja: "リング"),
+        "chart.style.line": S(zhHans: "折线", en: "Line", zhHant: "折線", ja: "折れ線"),
+        "chart.style.bars": S(zhHans: "柱状", en: "Bars", zhHant: "柱狀", ja: "バー"),
+        "chart.win.5m":     S(zhHans: "5 分钟", en: "5 min", zhHant: "5 分鐘", ja: "5 分"),
+        "chart.win.30m":    S(zhHans: "30 分钟", en: "30 min", zhHant: "30 分鐘", ja: "30 分"),
+        "chart.win.1h":     S(zhHans: "1 小时", en: "1 hour", zhHant: "1 小時", ja: "1 時間"),
 
         // Fans pane
         "f.title":    S(zhHans: "风扇控制", en: "Fan control", zhHant: "風扇控制", ja: "ファン制御"),
@@ -160,6 +170,10 @@ enum L {
         "g.showNetworkPanel": S(zhHans: "面板显示网络", en: "Network in panel", zhHant: "面板顯示網路", ja: "パネルにネットワーク"),
         "g.showProcesses":   S(zhHans: "面板显示进程占用", en: "Top processes in panel", zhHant: "面板顯示行程佔用", ja: "パネルにプロセス使用率"),
         "g.cpuWindow":       S(zhHans: "CPU 统计窗口", en: "CPU window", zhHant: "CPU 統計視窗", ja: "CPU 統計期間"),
+        "g.sectionCharts":   S(zhHans: "图表", en: "Charts", zhHant: "圖表", ja: "チャート"),
+        "g.topWidgetStyle":  S(zhHans: "顶部部件样式", en: "Top widgets", zhHant: "頂部部件樣式", ja: "上部ウィジェット"),
+        "g.topWidgetWindow": S(zhHans: "图表时间窗口", en: "Chart window", zhHant: "圖表時間視窗", ja: "チャート期間"),
+        "g.netChartKind":    S(zhHans: "网络展开图形态", en: "Network chart", zhHant: "網路展開圖形態", ja: "ネットワークチャート"),
         "cpuwin.realtime":   S(zhHans: "实时", en: "Live", zhHant: "即時", ja: "リアルタイム"),
         "cpuwin.10m":        S(zhHans: "10 分钟", en: "10 min", zhHant: "10 分鐘", ja: "10 分"),
         "cpuwin.30m":        S(zhHans: "30 分钟", en: "30 min", zhHant: "30 分鐘", ja: "30 分"),

@@ -73,6 +73,23 @@ final class Monitor: ObservableObject {
     @Published var helperAvailable = false
     @Published var busy = false
 
+    // Rolling history for the top-cluster time-series charts (up to 1h @ 2s tick).
+    // Reference buffers — reads happen during body re-renders driven by the
+    // @Published sensor values above, so they need no separate publishing.
+    let socHistory = MetricSeries(retention: 3600)
+    let ssdHistory = MetricSeries(retention: 3600)
+    let fanHistory = MetricSeries(retention: 3600)
+
+    // Average fan speed as a percent of range (0…100), NaN-safe.
+    var fanAvgPct: Double {
+        guard fanCount > 0 else { return 0 }
+        var sum = 0.0, n = 0
+        for i in 0..<fanCount where i < fanRPM.count && i < fanMax.count && !fanRPM[i].isNaN && fanMax[i] > 0 {
+            sum += Double(fanRPM[i] / fanMax[i]) * 100; n += 1
+        }
+        return n > 0 ? sum / Double(n) : 0
+    }
+
     private var timer: Timer?
 
     init() {
@@ -91,6 +108,11 @@ final class Monitor: ObservableObject {
         fanMax  = (0..<fanCount).map { cb_fan_max(Int32($0)) }
         fanMode = (0..<fanCount).map { Int(cb_fan_mode(Int32($0))) }
         helperAvailable = (cb_ctl_available() == 1)
+
+        let now = CFAbsoluteTimeGetCurrent()
+        if !socMax.isNaN { socHistory.record(Double(socMax), at: now) }
+        if !ssd.isNaN    { ssdHistory.record(Double(ssd), at: now) }
+        if fanCount > 0  { fanHistory.record(fanAvgPct, at: now) }
     }
     func revertAll() { _ = cb_ctl_auto_all() }
 
