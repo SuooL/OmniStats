@@ -384,7 +384,7 @@ struct GeneralPane: View {
     }
     private func toggleRow(_ label: String, _ b: Binding<Bool>) -> some View {
         Toggle(isOn: b) { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink) }
-            .toggleStyle(.switch).tint(Theme.accent)
+            .toggleStyle(.themed)
     }
     @ViewBuilder private func cardSection<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -426,10 +426,10 @@ struct AboutPane: View {
                 Text(L.t("a.softwareUpdate")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                 Toggle(isOn: Binding(get: { updater.automaticallyChecksForUpdates }, set: { updater.automaticallyChecksForUpdates = $0 })) {
                     Text(L.t("a.autoCheck")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-                }.toggleStyle(.switch).tint(Theme.accent)
+                }.toggleStyle(.themed)
                 Toggle(isOn: Binding(get: { updater.automaticallyDownloadsUpdates }, set: { updater.automaticallyDownloadsUpdates = $0 })) {
                     Text(L.t("a.autoDownload")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-                }.toggleStyle(.switch).tint(Theme.accent).disabled(!updater.automaticallyChecksForUpdates)
+                }.toggleStyle(.themed).disabled(!updater.automaticallyChecksForUpdates)
 
                 // Sparkle presents its own found-update / download / install dialogs.
                 HStack(spacing: 10) {
