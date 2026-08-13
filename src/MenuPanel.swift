@@ -96,6 +96,10 @@ struct MenuPanel: View {
             }.font(.system(size: 12))
         }
         .padding(14).frame(width: 300)
+        // Report an exact vertical size so MenuBarExtra(.window) resizes its host
+        // window to fit; without this, in-place expansion leaves the window sized
+        // to a stale height and the transparent menu material shows through.
+        .fixedSize(horizontal: false, vertical: true)
         .background(Theme.surface)
         .environment(\.colorScheme, store.config.appearance.colorScheme)
         // Collapse (and stop the nettop child) when the popover closes; `body`
@@ -103,25 +107,62 @@ struct MenuPanel: View {
         .onDisappear { netExpanded = false; netProc.enabled = false }
     }
 
-    // Top SoC/SSD/Fans cluster: ring gauges or time-series, per config.
-    private var topCluster: some View {
-        let style = store.config.topWidgetStyle
-        let win = store.config.topWidgetWindow.seconds
-        let now = CFAbsoluteTimeGetCurrent()
-        return HStack(spacing: style.isChart ? 8 : 14) {
-            MetricWidget(style: style, title: "SoC", label: fmtTemp(mon.socMax, fahrenheit: f),
-                         color: Theme.temp(Double(mon.socMax)), ringValue: tempFrac(mon.socMax),
-                         samples: mon.socHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
-            MetricWidget(style: style, title: "SSD", label: fmtTemp(mon.ssd, fahrenheit: f),
-                         color: Theme.temp(Double(mon.ssd)), ringValue: tempFrac(mon.ssd),
-                         samples: mon.ssdHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
-            if mon.fanCount > 0 {
-                MetricWidget(style: style, title: "FANS", label: String(format: "%.0f%%", fanFrac*100),
-                             color: Theme.accent, ringValue: fanFrac,
-                             samples: mon.fanHistory.samples, windowSeconds: win, now: now, yRange: 0...100)
+    // Top SoC/SSD/Fans cluster: ring gauges (per-metric) or, for the chart styles,
+    // one shared-coordinate time-series with a colored series per metric.
+    @ViewBuilder private var topCluster: some View {
+        if store.config.topWidgetStyle == .ring {
+            HStack(spacing: 14) {
+                Ring(value: tempFrac(mon.socMax), title: "SoC", label: fmtTemp(mon.socMax, fahrenheit: f),
+                     color: Theme.temp(Double(mon.socMax)))
+                Ring(value: tempFrac(mon.ssd), title: "SSD", label: fmtTemp(mon.ssd, fahrenheit: f),
+                     color: Theme.temp(Double(mon.ssd)))
+                if mon.fanCount > 0 {
+                    Ring(value: fanFrac, title: "FANS", label: String(format: "%.0f%%", fanFrac*100),
+                         color: Theme.accent)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .center)
+        } else {
+            combinedChart
         }
-        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    // The unified line/bars chart: SoC/SSD/FANS overlaid on a single 0–100 scale,
+    // each in a fixed series color, with a legend carrying the live values.
+    private var combinedChart: some View {
+        let now = CFAbsoluteTimeGetCurrent()
+        let win = store.config.topWidgetWindow.seconds
+        let kind: ChartKind = store.config.topWidgetStyle == .bars ? .bars : .line
+        var series: [MultiSparkline.Series] = [
+            .init(id: 0, samples: mon.socHistory.samples, color: Theme.series(0)),
+            .init(id: 1, samples: mon.ssdHistory.samples, color: Theme.series(1)),
+        ]
+        if mon.fanCount > 0 {
+            series.append(.init(id: 2, samples: mon.fanHistory.samples, color: Theme.series(2)))
+        }
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
+                legendItem("SoC", fmtTemp(mon.socMax, fahrenheit: f), Theme.series(0))
+                legendItem("SSD", fmtTemp(mon.ssd, fahrenheit: f), Theme.series(1))
+                if mon.fanCount > 0 {
+                    legendItem("FANS", String(format: "%.0f%%", fanFrac*100), Theme.series(2))
+                }
+                Spacer()
+            }
+            MultiSparkline(series: series, windowSeconds: win, now: now, yRange: 0...100, kind: kind)
+                .frame(height: 66)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity)
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line, lineWidth: 1))
+    }
+    private func legendItem(_ title: String, _ value: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(title).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.ink3)
+            Text(value).font(Theme.telemetry(11, .bold)).foregroundStyle(color)
+        }
     }
 
     // Network: a tappable row (upload/download for the most active interface).
@@ -130,7 +171,10 @@ struct MenuPanel: View {
     private var networkSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             divider
-            Button { withAnimation(.easeInOut(duration: 0.18)) { netExpanded.toggle() } } label: {
+            // No withAnimation: MenuBarExtra(.window) can't resize its host window
+            // in step with an interpolating height, which desyncs the window frame
+            // from the content (misposition + transparent bands). Toggle instantly.
+            Button { netExpanded.toggle() } label: {
                 HStack(spacing: 6) {
                     Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
                     if !net.iface.isEmpty {
@@ -227,16 +271,13 @@ struct MenuLabel: View {
     @ObservedObject var net: NetSampler
     @Environment(\.openWindow) private var openWindow
 
-    private var arrowColor: Color {
+    // Per-direction network color. In tempGradient mode the up/down figures are
+    // tinted by their live rate (same thermal language as the panel), not left
+    // white — so "follow temperature" colors every number, not just the temp.
+    private func netColor(_ rate: Double) -> Color {
         switch store.config.menuNumberColor {
-        case .accent, .tempGradient: return Theme.accent   // arrows accent-tinted, distinct from the numbers
-        case .mono:                  return .primary
-        }
-    }
-    private var numberColor: Color {
-        switch store.config.menuNumberColor {
+        case .tempGradient: return Theme.speed(rate)
         case .accent:       return Theme.accent
-        case .tempGradient: return Theme.ink
         case .mono:         return .primary
         }
     }
@@ -267,7 +308,7 @@ struct MenuLabel: View {
             txText: menuBarRate(net.txBps),
             rxText: menuBarRate(net.rxBps),
             tempText: mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax),
-            arrowColor: arrowColor, numberColor: numberColor, tempColor: tempColor)
+            txColor: netColor(net.txBps), rxColor: netColor(net.rxBps), tempColor: tempColor)
         let renderer = ImageRenderer(content: content)
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         guard let img = renderer.nsImage else { return NSImage() }
@@ -285,16 +326,16 @@ private struct MenuBarContent: View {
     let txText: String
     let rxText: String
     let tempText: String
-    let arrowColor: Color
-    let numberColor: Color
+    let txColor: Color
+    let rxColor: Color
     let tempColor: Color
 
     var body: some View {
         HStack(spacing: 6) {
             if showNet {
                 VStack(alignment: .leading, spacing: 1) {
-                    netRow("arrow.up", txText)     // upload on top
-                    netRow("arrow.down", rxText)   // download below
+                    netRow("arrow.up", txText, txColor)     // upload on top
+                    netRow("arrow.down", rxText, rxColor)   // download below
                 }
             }
             if showTemp {
@@ -312,10 +353,10 @@ private struct MenuBarContent: View {
         .padding(.horizontal, 1)
     }
 
-    private func netRow(_ icon: String, _ text: String) -> some View {
+    private func netRow(_ icon: String, _ text: String, _ color: Color) -> some View {
         HStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 7, weight: .bold)).foregroundStyle(arrowColor)
-            Text(text).font(.system(size: 8.5, weight: .regular, design: .monospaced)).foregroundStyle(numberColor)
+            Image(systemName: icon).font(.system(size: 7, weight: .bold)).foregroundStyle(color)
+            Text(text).font(.system(size: 8.5, weight: .regular, design: .monospaced)).foregroundStyle(color)
         }
     }
 }
