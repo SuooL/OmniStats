@@ -67,39 +67,70 @@ struct Sparkline: View {
     }
 }
 
-// One top-cluster widget: a ring gauge, or a titled time-series card. Keeps a
-// consistent ~68pt-tall footprint whichever style is active.
-struct MetricWidget: View {
-    var style: TopWidgetStyle
-    var title: String
-    var label: String            // current-value text (e.g. "48°C", "62%")
-    var color: Color
-    // ring
-    var ringValue: Double        // 0…1
-    // chart
-    var samples: [TimedSample]
+// Several series sharing one coordinate system: a single y-scale (`yRange`) and
+// x-window, with each series drawn in its own fixed color so overlapping curves
+// (e.g. SoC vs SSD, both temperatures) stay distinguishable. Faint gridlines make
+// the shared scale legible. Used by the top cluster's combined line/bars chart.
+struct MultiSparkline: View {
+    struct Series: Identifiable { let id: Int; var samples: [TimedSample]; var color: Color }
+    var series: [Series]
     var windowSeconds: Double
     var now: CFAbsoluteTime
     var yRange: ClosedRange<Double>
+    var kind: ChartKind
 
     var body: some View {
-        if style == .ring {
-            Ring(value: ringValue, title: title, label: label, color: color)
-        } else {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(title).font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.ink3)
-                    Spacer()
-                    Text(label).font(Theme.telemetry(11, .bold)).foregroundStyle(color)
-                }
-                Sparkline(samples: samples, windowSeconds: windowSeconds, now: now,
-                          yRange: yRange, kind: style == .bars ? .bars : .line, color: color)
-                    .frame(height: 40)
+        Canvas { ctx, size in
+            let W = size.width, H = size.height
+            guard windowSeconds > 0, W > 1, H > 1 else { return }
+            let span = max(0.0001, yRange.upperBound - yRange.lowerBound)
+            let x0 = now - windowSeconds
+            func X(_ t: CFAbsoluteTime) -> CGFloat { CGFloat((t - x0) / windowSeconds) * W }
+            func Y(_ v: Double) -> CGFloat {
+                let f = min(1, max(0, (v - yRange.lowerBound) / span))
+                return H - CGFloat(f) * H
             }
-            .padding(7)
-            .frame(maxWidth: .infinity, minHeight: 68)
-            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line, lineWidth: 1))
+
+            // Shared-scale gridlines at 25/50/75% plus the baseline.
+            for frac in [0.25, 0.5, 0.75] {
+                var g = Path(); let y = H - CGFloat(frac) * H
+                g.move(to: CGPoint(x: 0, y: y)); g.addLine(to: CGPoint(x: W, y: y))
+                ctx.stroke(g, with: .color(Theme.line.opacity(0.35)), lineWidth: 0.5)
+            }
+            var base = Path(); base.move(to: CGPoint(x: 0, y: H - 0.5)); base.addLine(to: CGPoint(x: W, y: H - 0.5))
+            ctx.stroke(base, with: .color(Theme.line.opacity(0.7)), lineWidth: 1)
+
+            if kind == .bars {
+                // Grouped columns: within each time bucket, one thin bar per series.
+                let cols = max(6, min(20, Int(W / 12)))
+                let n = max(1, series.count)
+                let bw = W / CGFloat(cols)
+                let sub = bw * 0.72 / CGFloat(n)   // per-series bar width inside the group
+                for (si, s) in series.enumerated() {
+                    var buckets = [Double?](repeating: nil, count: cols)
+                    for p in s.samples where p.t >= x0 {
+                        let idx = min(cols - 1, max(0, Int((p.t - x0) / windowSeconds * Double(cols))))
+                        buckets[idx] = max(buckets[idx] ?? 0, p.v)
+                    }
+                    for (i, b) in buckets.enumerated() {
+                        guard let v = b else { continue }
+                        let x = CGFloat(i) * bw + bw * 0.14 + CGFloat(si) * sub
+                        let y = Y(v)
+                        let rect = CGRect(x: x, y: y, width: max(1, sub * 0.85), height: max(1, H - y))
+                        ctx.fill(Path(roundedRect: rect, cornerRadius: min(1.2, sub * 0.3)), with: .color(s.color))
+                    }
+                }
+            } else {
+                for s in series {
+                    let pts = s.samples.filter { $0.t >= x0 }
+                    guard pts.count >= 1 else { continue }
+                    var line = Path()
+                    line.move(to: CGPoint(x: X(pts[0].t), y: Y(pts[0].v)))
+                    for p in pts.dropFirst() { line.addLine(to: CGPoint(x: X(p.t), y: Y(p.v))) }
+                    ctx.stroke(line, with: .color(s.color),
+                               style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                }
+            }
         }
     }
 }

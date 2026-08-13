@@ -112,12 +112,56 @@ enum Theme {
         return gradient(key)
     }
 
+    // Fixed, mutually-distinct per-series colors for the combined top-widget chart.
+    // SoC and SSD are both temperatures, so a value-driven thermal tint would make
+    // their curves nearly identical — the overlaid multi-series view needs stable
+    // hues that stay legible on both chromes. Order: SoC, SSD, FANS.
+    private static let seriesHex: [(UInt32, UInt32)] = [
+        (0xF0883E, 0xD1642A),   // SoC   — amber
+        (0x53B9F0, 0x1E7FC2),   // SSD   — sky
+        (0xB48CF8, 0x6E4FD0),   // FANS  — violet
+    ]
+    static func series(_ i: Int) -> Color {
+        let p = seriesHex[((i % seriesHex.count) + seriesHex.count) % seriesHex.count]
+        return Color(hex: mode == .dark ? p.0 : p.1)
+    }
+
     static func telemetry(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .rounded).monospacedDigit()
     }
     static func label(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight)
     }
+}
+
+// A themed on/off switch that matches the app's palette instead of the stock
+// macOS control (accent track when on, neutral track when off, sliding knob).
+struct ThemedToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack {
+            configuration.label
+            Spacer()
+            ZStack {
+                Capsule()
+                    .fill(configuration.isOn ? Theme.accent : Theme.line)
+                    .frame(width: 40, height: 22)
+                Circle()
+                    .fill(Color.white)
+                    .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+                    .padding(2)
+                    .frame(width: 22, height: 22)
+                    .offset(x: configuration.isOn ? 9 : -9)
+            }
+            .animation(.easeInOut(duration: 0.18), value: configuration.isOn)
+            .contentShape(Capsule())
+            .onTapGesture { configuration.isOn.toggle() }
+            .accessibilityAddTraits(configuration.isOn ? [.isSelected] : [])
+        }
+    }
+}
+
+extension ToggleStyle where Self == ThemedToggleStyle {
+    static var themed: ThemedToggleStyle { ThemedToggleStyle() }
 }
 
 extension Color {
