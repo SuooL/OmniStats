@@ -21,6 +21,39 @@ struct Ring: View {
     }
 }
 
+// Carries the panel's measured height up to the sizer.
+private struct PanelHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+// Forces the MenuBarExtra(.window) host window to exactly `targetHeight`, anchored
+// to its top edge. Works around the AppKit/SwiftUI limitation where the window
+// grows with its content but never shrinks back — which otherwise leaves the
+// collapsed panel centered in a stale, oversized (partly transparent) window.
+private struct PanelWindowSizer: NSViewRepresentable {
+    var targetHeight: CGFloat
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        let target = targetHeight
+        guard target > 1 else { return }
+        // Defer to after SwiftUI commits this layout pass so the window exists and
+        // the fitting size is settled.
+        DispatchQueue.main.async {
+            guard let win = nsView.window else { return }
+            let contentH = win.contentView?.frame.height ?? win.frame.height
+            let chrome = win.frame.height - contentH        // 0 for the borderless panel; safe otherwise
+            let desired = target + chrome
+            guard abs(win.frame.height - desired) > 0.5 else { return }
+            let top = win.frame.maxY                        // keep the top edge pinned under the menu bar
+            var f = win.frame
+            f.size.height = desired
+            f.origin.y = top - desired
+            win.setFrame(f, display: true)
+        }
+    }
+}
+
 struct MenuPanel: View {
     @ObservedObject var mon: Monitor
     @ObservedObject var store: ConfigStore
@@ -30,6 +63,7 @@ struct MenuPanel: View {
     @ObservedObject var netProc: NetProcSampler
     @Environment(\.openWindow) private var openWindow
     @State private var netExpanded = false
+    @State private var panelHeight: CGFloat = 0
 
     private var f: Bool { store.config.fahrenheit }
     private func tempFrac(_ c: Float) -> Double { c.isNaN ? 0 : Double(max(0, min(100, c)) / 100) }
@@ -96,11 +130,20 @@ struct MenuPanel: View {
             }.font(.system(size: 12))
         }
         .padding(14).frame(width: 300)
-        // Report an exact vertical size so MenuBarExtra(.window) resizes its host
-        // window to fit; without this, in-place expansion leaves the window sized
-        // to a stale height and the transparent menu material shows through.
+        // Report an exact vertical size so the content doesn't stretch to fill a
+        // stale (oversized) host window.
         .fixedSize(horizontal: false, vertical: true)
         .background(Theme.surface)
+        // Measure the real panel height and drive the host NSWindow to it. MenuBarExtra(.window)
+        // grows its window when the content grows but does NOT shrink it back when the network
+        // row collapses — the smaller content then centers in the tall window and the desktop
+        // shows through top & bottom. PanelWindowSizer forces the window to the measured height,
+        // anchored to its top edge so it stays pinned under the menu bar.
+        .background(GeometryReader { g in
+            Color.clear.preference(key: PanelHeightKey.self, value: g.size.height)
+        })
+        .onPreferenceChange(PanelHeightKey.self) { panelHeight = $0 }
+        .background(PanelWindowSizer(targetHeight: panelHeight))
         .environment(\.colorScheme, store.config.appearance.colorScheme)
         // Collapse (and stop the nettop child) when the popover closes; `body`
         // isn't guaranteed to re-run on dismissal, so tear down directly here.
