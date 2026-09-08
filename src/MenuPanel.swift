@@ -21,39 +21,6 @@ struct Ring: View {
     }
 }
 
-// Carries the panel's measured height up to the sizer.
-private struct PanelHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
-// Forces the MenuBarExtra(.window) host window to exactly `targetHeight`, anchored
-// to its top edge. Works around the AppKit/SwiftUI limitation where the window
-// grows with its content but never shrinks back — which otherwise leaves the
-// collapsed panel centered in a stale, oversized (partly transparent) window.
-private struct PanelWindowSizer: NSViewRepresentable {
-    var targetHeight: CGFloat
-    func makeNSView(context: Context) -> NSView { NSView() }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        let target = targetHeight
-        guard target > 1 else { return }
-        // Defer to after SwiftUI commits this layout pass so the window exists and
-        // the fitting size is settled.
-        DispatchQueue.main.async {
-            guard let win = nsView.window else { return }
-            let contentH = win.contentView?.frame.height ?? win.frame.height
-            let chrome = win.frame.height - contentH        // 0 for the borderless panel; safe otherwise
-            let desired = target + chrome
-            guard abs(win.frame.height - desired) > 0.5 else { return }
-            let top = win.frame.maxY                        // keep the top edge pinned under the menu bar
-            var f = win.frame
-            f.size.height = desired
-            f.origin.y = top - desired
-            win.setFrame(f, display: true)
-        }
-    }
-}
-
 struct MenuPanel: View {
     @ObservedObject var mon: Monitor
     @ObservedObject var store: ConfigStore
@@ -61,9 +28,12 @@ struct MenuPanel: View {
     @ObservedObject var net: NetSampler
     @ObservedObject var proc: ProcSampler
     @ObservedObject var netProc: NetProcSampler
-    @Environment(\.openWindow) private var openWindow
-    @State private var netExpanded = false
-    @State private var panelHeight: CGFloat = 0
+    // Expansion lives in the controller-owned state so closing the panel can
+    // collapse it; see PanelState in StatusPanel.swift.
+    @ObservedObject var state: PanelState
+    let onOpenSettings: () -> Void
+
+    private var netExpanded: Bool { state.netExpanded }
 
     private var f: Bool { store.config.fahrenheit }
     private func tempFrac(_ c: Float) -> Double { c.isNaN ? 0 : Double(max(0, min(100, c)) / 100) }
@@ -117,7 +87,7 @@ struct MenuPanel: View {
 
             divider
             HStack {
-                Button { NSApp.activate(ignoringOtherApps: true); openWindow(id: "settings") } label: {
+                Button(action: onOpenSettings) {
                     Label(L.t("m.settings"), systemImage: "slider.horizontal.3")
                 }.buttonStyle(.plain).foregroundStyle(Theme.accent)
                 if mon.fanCount > 0 {
@@ -130,24 +100,14 @@ struct MenuPanel: View {
             }.font(.system(size: 12))
         }
         .padding(14).frame(width: 300)
-        // Report an exact vertical size so the content doesn't stretch to fill a
-        // stale (oversized) host window.
+        // Report an exact vertical size: SizingHostingView reads this as the
+        // window's target height, so the panel window is always exactly as tall
+        // as its content — no stale height, no centring, no transparent bands.
         .fixedSize(horizontal: false, vertical: true)
         .background(Theme.surface)
-        // Measure the real panel height and drive the host NSWindow to it. MenuBarExtra(.window)
-        // grows its window when the content grows but does NOT shrink it back when the network
-        // row collapses — the smaller content then centers in the tall window and the desktop
-        // shows through top & bottom. PanelWindowSizer forces the window to the measured height,
-        // anchored to its top edge so it stays pinned under the menu bar.
-        .background(GeometryReader { g in
-            Color.clear.preference(key: PanelHeightKey.self, value: g.size.height)
-        })
-        .onPreferenceChange(PanelHeightKey.self) { panelHeight = $0 }
-        .background(PanelWindowSizer(targetHeight: panelHeight))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.line, lineWidth: 1))
         .environment(\.colorScheme, store.config.appearance.colorScheme)
-        // Collapse (and stop the nettop child) when the popover closes; `body`
-        // isn't guaranteed to re-run on dismissal, so tear down directly here.
-        .onDisappear { netExpanded = false; netProc.enabled = false }
     }
 
     // Top SoC/SSD/Fans cluster: ring gauges (per-metric) or, for the chart styles,
@@ -214,10 +174,14 @@ struct MenuPanel: View {
     private var networkSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             divider
-            // No withAnimation: MenuBarExtra(.window) can't resize its host window
-            // in step with an interpolating height, which desyncs the window frame
-            // from the content (misposition + transparent bands). Toggle instantly.
-            Button { netExpanded.toggle() } label: {
+            // Toggle instantly. An animated disclosure was measured not to work:
+            // NSHostingView reports the *final* ideal size as soon as the state
+            // flips (one intrinsicContentSize invalidation, not one per frame),
+            // so the window would reach its new height while the content was
+            // still interpolating — and compress the content for the rest of the
+            // animation. Instant means content and window settle in the same
+            // layout pass, which is the whole point of owning the panel.
+            Button { state.netExpanded.toggle() } label: {
                 HStack(spacing: 6) {
                     Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
                     if !net.iface.isEmpty {
@@ -301,105 +265,3 @@ struct MenuPanel: View {
 }
 
 extension Notification.Name { static let openOmniSettings = Notification.Name("openOmniSettings") }
-
-// The menu-bar label.
-//
-// SwiftUI's MenuBarExtra clips a multi-subview / stacked label (it shows only the
-// first row and drops trailing views), so we rasterize the whole readout into one
-// NSImage via ImageRenderer — the menu bar draws an image at its natural size with
-// no clipping. This is how pro menu-bar apps stack upload/download on two rows.
-struct MenuLabel: View {
-    @ObservedObject var mon: Monitor
-    @ObservedObject var store: ConfigStore
-    @ObservedObject var net: NetSampler
-    @Environment(\.openWindow) private var openWindow
-
-    // Per-direction network color. In tempGradient mode the up/down figures are
-    // tinted by their live rate (same thermal language as the panel), not left
-    // white — so "follow temperature" colors every number, not just the temp.
-    private func netColor(_ rate: Double) -> Color {
-        switch store.config.menuNumberColor {
-        case .tempGradient: return Theme.speed(rate)
-        case .accent:       return Theme.accent
-        case .mono:         return .primary
-        }
-    }
-    private var tempColor: Color {
-        switch store.config.menuNumberColor {
-        case .tempGradient: return Theme.temp(Double(mon.socMax))
-        case .accent:       return Theme.accent
-        case .mono:         return .primary
-        }
-    }
-
-    var body: some View {
-        Theme.accentPreset = store.config.accent
-        L.lang = store.config.language
-        return Image(nsImage: rendered())
-            .onReceive(NotificationCenter.default.publisher(for: .openOmniSettings)) { _ in
-                NSApp.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
-            }
-    }
-
-    private func rendered() -> NSImage {
-        let cfg = store.config
-        let mono = cfg.menuNumberColor == .mono
-        let content = MenuBarContent(
-            showNet: cfg.showNetworkInMenuBar,
-            showTemp: cfg.showTempInMenuBar,
-            txText: menuBarRate(net.txBps),
-            rxText: menuBarRate(net.rxBps),
-            tempText: mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax),
-            txColor: netColor(net.txBps), rxColor: netColor(net.rxBps), tempColor: tempColor)
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-        guard let img = renderer.nsImage else { return NSImage() }
-        img.isTemplate = mono   // mono → adaptive template (legible on any menu-bar tint); colored → fixed colors
-        return img
-    }
-}
-
-// The rasterized menu-bar readout: stacked upload/download on the left, temperature
-// on the right. Rendered off-screen by ImageRenderer, so colors are passed in
-// explicitly rather than read from the environment.
-private struct MenuBarContent: View {
-    let showNet: Bool
-    let showTemp: Bool
-    let txText: String
-    let rxText: String
-    let tempText: String
-    let txColor: Color
-    let rxColor: Color
-    let tempColor: Color
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if showNet {
-                VStack(alignment: .leading, spacing: 1) {
-                    netRow("arrow.up", txText, txColor)     // upload on top
-                    netRow("arrow.down", rxText, rxColor)   // download below
-                }
-            }
-            if showTemp {
-                HStack(spacing: 2) {
-                    Image(systemName: "thermometer.medium").font(.system(size: 11))
-                    Text(tempText).font(.system(size: 12, weight: .medium)).monospacedDigit()
-                }
-                .foregroundStyle(tempColor)
-            }
-            if !showNet && !showTemp {
-                Image(systemName: "gauge.with.dots.needle.bottom.50percent").font(.system(size: 13))
-                    .foregroundStyle(tempColor)
-            }
-        }
-        .padding(.horizontal, 1)
-    }
-
-    private func netRow(_ icon: String, _ text: String, _ color: Color) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 7, weight: .bold)).foregroundStyle(color)
-            Text(text).font(.system(size: 8.5, weight: .regular, design: .monospaced)).foregroundStyle(color)
-        }
-    }
-}
