@@ -28,6 +28,7 @@ struct MenuPanel: View {
     @ObservedObject var net: NetSampler
     @ObservedObject var proc: ProcSampler
     @ObservedObject var netProc: NetProcSampler
+    let resources: ResourceSampler
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
     @ObservedObject var state: PanelState
@@ -53,6 +54,7 @@ struct MenuPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             topCluster
+            ResourceView(sampler: resources, store: store)
 
             divider
             telem(L.t("m.socAvg"), fmtTemp(mon.socAvg, fahrenheit: f), Theme.temp(Double(mon.socAvg)))

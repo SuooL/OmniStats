@@ -9,7 +9,7 @@ import Foundation
 // (measured: en0 on a normal machine had already wrapped 91 times), so it is
 // unusable for a long-lived monitor.
 //
-// The counters are differentiated once a second into bytes/sec. "Most active" =
+// Counters are differentiated at the policy-selected interval into bytes/sec. "Most active" =
 // the en* interface (Wi-Fi or Ethernet) with the largest rx+tx delta this tick;
 // when everything is idle it sticks with the last chosen interface so the
 // readout doesn't flap.
@@ -23,7 +23,7 @@ final class NetSampler: ObservableObject {
     @Published var txBps: Double = 0     // upload,   bytes/sec
     @Published var iface: String = ""
 
-    // 1h rolling history for the expanded network panel (native 1s tick).
+    // 1h rolling history for the expanded network panel at the selected cadence.
     let rxHistory = MetricSeries(retention: 3600)
     let txHistory = MetricSeries(retention: 3600)
 
@@ -34,7 +34,7 @@ final class NetSampler: ObservableObject {
     private var timer: Timer?
     private(set) var samplingInterval: TimeInterval?
 
-    init() { setSamplingInterval(2) }
+    init() { setSamplingInterval(3) }
     deinit { timer?.invalidate() }
 
     func setSamplingInterval(_ interval: TimeInterval?) {

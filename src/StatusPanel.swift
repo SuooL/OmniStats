@@ -2,21 +2,10 @@ import SwiftUI
 import AppKit
 import Combine
 
-// The menu-bar status item and its drop-down panel, hosted directly on AppKit.
-//
-// This replaces SwiftUI's `MenuBarExtra(.window)`. That API owns its host window
-// and sizes it from the SwiftUI fitting size *asynchronously*: when the panel's
-// content shrank (collapsing the network row) the window kept its old height for
-// a frame or two, the shorter content was centred inside it, and the desktop
-// showed through above and below — then the window snapped shut. Driving the
-// resize from a measured PreferenceKey (the previous workaround) added a second
-// full layout pass on every height change and still left the two visible jumps.
-//
-// Owning the NSPanel removes the whole class of problem: `SizingHostingView`
-// reports SwiftUI's ideal size from inside `layout()`, and the window frame is
-// updated *in the same layout pass*, anchored to its top edge. Content and
-// window therefore always agree, and an animated SwiftUI disclosure drives the
-// window height frame-by-frame instead of snapping.
+// Own the status item and dashboard window so content changes keep the top
+// edge pinned to the menu bar. A scroll viewport caps tall dashboards to the
+// visible screen. Intrinsic-size notifications are coalesced after SwiftUI
+// commits layout; resizing a hosting view reentrantly can retain old centering.
 
 // MARK: - Shared panel state
 // The controller owns expansion so it can stop the network subprocess on
@@ -33,11 +22,11 @@ final class PanelWindow: NSPanel {
 }
 
 // MARK: - Self-measuring hosting view
-// Publishes SwiftUI's ideal size on every layout pass. The controller resizes
-// the window from this callback, synchronously, so the window never lags the
-// content.
+// Coalesces ideal-size changes after layout commits, avoiding reentrant frame
+// writes while retaining no closed hosting trees.
 final class SizingHostingView<Content: View>: NSHostingView<Content> {
     var onSizeChange: ((CGSize) -> Void)?
+    private var sizeNotificationPending = false
 
     required init(rootView: Content) {
         super.init(rootView: rootView)
@@ -46,9 +35,26 @@ final class SizingHostingView<Content: View>: NSHostingView<Content> {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        scheduleSizeNotification()
+    }
+
+    private func scheduleSizeNotification() {
+        guard !sizeNotificationPending else { return }
+        sizeNotificationPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sizeNotificationPending = false
+            self.onSizeChange?(self.intrinsicContentSize)
+        }
+    }
+
     override func layout() {
         super.layout()
-        onSizeChange?(intrinsicContentSize)
+        // Resize the document after this layout commits. Resizing an NSHostingView
+        // from inside its own layout leaves SwiftUI centered in the previous size.
+        scheduleSizeNotification()
     }
 }
 
@@ -63,16 +69,20 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let netProc: NetProcSampler
     private let onOpenSettings: @MainActor () -> Void
     private let activity: ActivityState
+    private let resources: ResourceSampler
 
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelState = PanelState()
     private(set) var panel: PanelWindow?
-    private var hosting: SizingHostingView<MenuPanel>?
+    private(set) var hosting: SizingHostingView<MenuPanel>?
+    private var scrolling: NSScrollView?
+    var maximumPanelHeight: CGFloat = .greatestFiniteMagnitude
     private var labelRefreshPending = false
     private var lastLabelContent: MenuBarContent?
     private var lastLabelScale: CGFloat = 0
     private var lastLabelAppearance: AppearanceMode?
 
+    private var panelVisibleFrame: NSRect?
     private var pinnedTop: CGFloat = 0        // screen y of the panel's top edge, held across resizes
     private var resizing = false              // re-entrancy guard for layout → setFrame → layout
     private var closingPanel = false
@@ -83,11 +93,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     init(mon: Monitor, store: ConfigStore, engine: Engine, net: NetSampler,
          proc: ProcSampler, netProc: NetProcSampler, activity: ActivityState = ActivityState(),
+         resources: ResourceSampler = ResourceSampler(),
          onOpenSettings: @MainActor @escaping () -> Void) {
         self.mon = mon; self.store = store; self.engine = engine
         self.net = net; self.proc = proc; self.netProc = netProc
         self.onOpenSettings = onOpenSettings
-        self.activity = activity
+        self.activity = activity; self.resources = resources
         super.init()
 
         if let button = statusItem.button {
@@ -194,7 +205,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // MARK: panel lifecycle
     private func buildPanel() {
         let root = MenuPanel(mon: mon, store: store, engine: engine, net: net, proc: proc,
-                             netProc: netProc, state: panelState,
+                             netProc: netProc, resources: resources, state: panelState,
                              onOpenSettings: { [weak self] in
                                  self?.closePanel()
                                  self?.onOpenSettings()
@@ -205,7 +216,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let p = PanelWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 400),
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
-        p.contentView = host
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        // Keep the fixed-width dashboard intact even when macOS forces legacy
+        // scrollbars. Trackpad/wheel and accessibility scrolling remain available.
+        scroll.hasVerticalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.documentView = host
+        scrolling = scroll
+        p.contentView = scroll
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
@@ -222,21 +243,35 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         hosting = host
     }
 
-    // Called from the hosting view's layout pass. Resizes the window to the
-    // content's ideal size, keeping the top edge pinned under the menu bar.
+    // Size the scroll viewport to fit the screen while retaining full document height.
+    private func boundedContentSize(_ size: CGSize) -> CGSize {
+        let available = panelVisibleFrame.map { max(100, pinnedTop - $0.minY - 8) } ?? size.height
+        return CGSize(width: size.width, height: min(size.height, available, maximumPanelHeight))
+    }
+
     private func applyContentSize(_ size: CGSize) {
         guard !resizing, let panel, panel.isVisible,
               size.width.isFinite, size.height.isFinite,
               size.width > 1, size.height > 1 else { return }
-        var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-        guard abs(frame.height - panel.frame.height) > 0.5
-                || abs(frame.width - panel.frame.width) > 0.5 else { return }
+        let bounded = boundedContentSize(size)
+        let documentChanged = hosting.map { abs($0.frame.height-size.height) > 0.5 || abs($0.frame.width-size.width) > 0.5 } ?? false
+        let viewportChanged = abs(panel.frame.height-bounded.height) > 0.5 || abs(panel.frame.width-bounded.width) > 0.5
+        guard documentChanged || viewportChanged else { return }
+        resizing = true
+        defer { resizing = false }
+        if documentChanged { hosting?.setFrameSize(size) }
+        var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: bounded))
         frame.origin.x = panel.frame.origin.x
         frame.origin.y = pinnedTop - frame.height
-        resizing = true
-        panel.setFrame(frame, display: true)
-        panel.invalidateShadow()
-        resizing = false
+        if abs(frame.height-panel.frame.height) > 0.5 || abs(frame.width-panel.frame.width) > 0.5 {
+            panel.setFrame(frame, display: true)
+            panel.invalidateShadow()
+        }
+        if let scrolling {
+            let y = min(scrolling.contentView.bounds.minY, max(0, size.height-bounded.height))
+            scrolling.contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
+            scrolling.reflectScrolledClipView(scrolling.contentView)
+        }
     }
 
     @objc private func togglePanel() {
@@ -254,23 +289,30 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     func openPanel() {
         guard panel?.isVisible != true else { return }
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        panelVisibleFrame = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame
+        if let visible = panelVisibleFrame {
+            // Overflowed menu-bar items can have an off-screen anchor during
+            // programmatic opening; keep the dashboard on its actual screen.
+            pinnedTop = anchor.minY > visible.minY ? min(anchor.minY - 6, visible.maxY) : visible.maxY - 6
+        } else { pinnedTop = anchor.minY - 6 }
         if panel == nil { buildPanel() }
         guard let panel, let hosting else { return }
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.intrinsicContentSize
-        let frameSize = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
+        hosting.setFrameSize(size)
+        let frameSize = panel.frameRect(forContentRect: NSRect(origin: .zero, size: boundedContentSize(size))).size
 
-        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
         var x = anchor.midX - frameSize.width / 2
         if let visible = (buttonWindow.screen ?? NSScreen.main)?.visibleFrame {
             x = min(max(visible.minX + 8, x), visible.maxX - frameSize.width - 8)
         }
-        pinnedTop = anchor.minY - 6
 
         panel.setFrame(NSRect(x: x, y: pinnedTop - frameSize.height,
                               width: frameSize.width, height: frameSize.height), display: false)
         button.highlight(true)
         panel.makeKeyAndOrderFront(nil)
+        scrolling?.contentView.scroll(to: .zero)
         activity.panelVisible = true
         panel.invalidateShadow()
         installMonitors()
@@ -289,9 +331,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         // orderOut alone retains the hosting tree and its live subscriptions.
         // Destroy it so hidden charts cannot keep SwiftUI laying out.
         hosting?.onSizeChange = nil
+        scrolling?.documentView = nil
         panel.contentView = nil
         panel.close()
-        hosting = nil
+        hosting = nil; scrolling = nil
         self.panel = nil
         lastClose = Date()
     }

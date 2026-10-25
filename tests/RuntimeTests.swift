@@ -14,6 +14,18 @@ enum RuntimeTests {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
+    @MainActor static func snapshot(_ view: NSView?, name: String) {
+        guard let directory = ProcessInfo.processInfo.environment["OMNISTATS_TEST_SNAPSHOT_DIR"], let view,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        if let scroll = view as? NSScrollView {
+            let details = "Snapshot \(name): scroll=\(scroll.frame) clip=\(scroll.contentView.bounds) document=\(scroll.documentView!.frame) flipped=\(scroll.documentView!.isFlipped)"
+            FileHandle.standardError.write(Data(details.utf8) + Data([10]))
+        }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let url = URL(fileURLWithPath: directory).appendingPathComponent(name + ".png")
+        try! bitmap.representation(using: .png, properties: [:])!.write(to: url)
+    }
+
     static func resources() -> (cpu: Double, memory: Double) {
         var info = rusage_info_v4()
         let result = withUnsafeMutablePointer(to: &info) { ptr in
@@ -43,11 +55,15 @@ enum RuntimeTests {
         let netProc = NetProcSampler()
         let engine = Engine(monitor: mon, store: store)
         let activity = ActivityState()
+        let resourceSampler = ResourceSampler(read: {
+            ResourceSnapshot(memory: CapacityUsage(used: 32 * 1_073_741_824, total: 64 * 1_073_741_824),
+                             disk: CapacityUsage(used: 400e9, total: 1000e9), gpuPercent: 42)
+        })
         let coordinator = SamplingCoordinator(monitor: mon, net: net, proc: proc, netProc: netProc,
-                                             engine: engine, store: store, activity: activity)
+                                             engine: engine, store: store, activity: activity, resources: resourceSampler)
         defer { withExtendedLifetime(coordinator) {} }
         let status = StatusItemController(mon: mon, store: store, engine: engine,
-            net: net, proc: proc, netProc: netProc, activity: activity, onOpenSettings: {})
+            net: net, proc: proc, netProc: netProc, activity: activity, resources: resourceSampler, onOpenSettings: {})
         check(status.panel == nil, "Startup must not construct the hidden panel")
         check(!proc.enabled, "Process sampling preferences must apply before opening a panel")
         drain()
@@ -57,11 +73,13 @@ enum RuntimeTests {
         }
         check(button.image != nil, "Menu-bar image must render")
         check(button.toolTip?.contains("content.") == false, "Tooltip must interpolate live values")
-        let backgroundCadence: Double = ProcessInfo.processInfo.isLowPowerModeEnabled ? 10 : 5
+        let backgroundCadence: Double = ProcessInfo.processInfo.isLowPowerModeEnabled ? 30 : 10
         check(mon.samplingInterval == backgroundCadence, "Coordinator must apply background cadence")
         activity.panelVisible = true; drain()
-        check(mon.samplingInterval == 2 && net.samplingInterval == 1, "Visible panel must accelerate sampling")
+        check(mon.samplingInterval == 10 && net.samplingInterval == 3, "Visible panel must use default sampling")
+        check(resourceSampler.samplingInterval == 10 && resourceSampler.hasSample, "Visible panel must collect resources")
         activity.panelVisible = false; drain()
+        check(resourceSampler.samplingInterval == nil, "Hidden panel must stop resource sampling")
         check(mon.samplingInterval == backgroundCadence, "Hidden panel must restore background cadence")
         var imageWrites = 0
         let observation = button.observe(\.image, options: [.new]) { _, _ in imageWrites += 1 }
@@ -117,19 +135,36 @@ enum RuntimeTests {
         // Warm up framework caches before measuring repeated window lifetimes.
         for iteration in 0..<12 {
             weak var panelHost: NSView?
+            weak var dashboardHost: NSView?
             weak var settingsHost: NSViewController?
             autoreleasepool {
                 status.openPanel()
                 check(status.panel?.isVisible == true, "Panel must reopen")
                 panelHost = status.panel?.contentView
-                if iteration == 0, let host = panelHost as? SizingHostingView<MenuPanel> {
+                dashboardHost = status.hosting
+                if iteration == 0, let host = status.hosting {
+                    drain(0.15)
+                    snapshot(status.panel?.contentView, name: "resources")
                     let height = status.panel!.frame.height
                     host.rootView.state.netExpanded = true
                     drain(0.15)
                     check(status.panel!.frame.height > height, "Expanded network must resize the panel")
+                    snapshot(status.panel?.contentView, name: "expanded")
+                    check(status.panel!.frame.minY >= (button.window?.screen?.visibleFrame.minY ?? 0),
+                          "Expanded panel must remain inside the visible screen")
                     host.rootView.state.netExpanded = false
                     drain(0.15)
                     check(abs(status.panel!.frame.height - height) < 1, "Collapsed panel must regain its height")
+                    let now = sampleTime()
+                    for i in 0..<30 {
+                        mon.socHistory.record(60 + 12 * sin(Double(i)/3), at: now-Double(29-i)*10, cadence: 10)
+                        mon.ssdHistory.record(40 + 4 * sin(Double(i)/5), at: now-Double(29-i)*10, cadence: 10)
+                    }
+                    store.config.topWidgetStyle = .line
+                    drain(0.15)
+                    snapshot(status.panel?.contentView, name: "smooth-history")
+                    store.config.topWidgetStyle = .ring
+                    drain(0.1)
                 }
                 status.closePanel()
                 check(status.panel == nil && !netProc.enabled, "Dismissal must discard the panel and stop nettop")
@@ -148,9 +183,23 @@ enum RuntimeTests {
                 check(settings.window == nil, "Closed settings window must be released")
             }
             drain(0.1)
-            check(panelHost == nil, "Closed panel hosting tree is retained")
+            check(panelHost == nil && dashboardHost == nil, "Closed panel viewport or hosting tree is retained")
             check(settingsHost == nil, "Closed settings hosting controller is retained")
         }
+
+        status.maximumPanelHeight = 300
+        status.openPanel(); drain(0.1)
+        check(status.panel!.frame.height <= 300, "Small screens must cap the panel viewport")
+        check(status.hosting!.frame.height > status.panel!.frame.height, "Overflow content must remain scrollable")
+        snapshot(status.panel?.contentView, name: "capped")
+        if let scroll = status.panel?.contentView as? NSScrollView {
+            let bottom = status.hosting!.frame.height - scroll.contentSize.height
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            check(abs(scroll.contentView.bounds.minY-bottom) < 1, "Overflow dashboard must scroll to its footer")
+        }
+        status.closePanel()
+        status.maximumPanelHeight = .greatestFiniteMagnitude
 
         // Exercise real read-only nettop subprocesses, including callbacks from old sessions.
         var retired: [pid_t] = []

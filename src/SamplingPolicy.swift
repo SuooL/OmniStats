@@ -12,22 +12,23 @@ struct SamplingPolicy: Equatable {
     let sensors: TimeInterval?
     let network: TimeInterval?
     let processes: TimeInterval?
+    let controlSensors: TimeInterval?
 
     init(config: OmniStatsConfig, panelVisible: Bool, settingsVisible: Bool,
          displayAsleep: Bool, systemAsleep: Bool, lowPower: Bool) {
-        if systemAsleep { sensors = nil; network = nil; processes = nil; return }
-        let mode: RefreshMode = lowPower ? .economical : config.refreshMode
+        if systemAsleep { sensors = nil; network = nil; processes = nil; controlSensors = nil; return }
         let visible = !displayAsleep && (panelVisible || settingsVisible)
-        let activeControl = config.mode != .auto
-        let backgroundSensor: Double = mode == .responsive ? 3 : mode == .balanced ? 5 : 10
-        sensors = activeControl || visible ? 2 : displayAsleep ? nil : backgroundSensor
+        let mode: RefreshMode = visible ? .balanced : lowPower ? .economical : config.refreshMode
+        // Only curve control needs fresh temperatures independently of display updates.
+        controlSensors = config.mode == .curve ? 2 : nil
+        sensors = displayAsleep ? nil : mode == .responsive ? 3 : mode == .balanced ? 10 : 30
         let showNetwork = !displayAsleep && (config.showNetworkInMenuBar || (panelVisible && config.showNetworkPanel))
-        network = showNetwork ? (panelVisible ? 1 : mode == .responsive ? 1 : mode == .balanced ? 2 : 5) : nil
+        network = showNetwork ? (mode == .responsive ? 1 : mode == .balanced ? 3 : 10) : nil
         // Rolling averages still collect in the background. Realtime rankings
         // have no history requirement and can stop when their panel is hidden.
         let showProcesses = !displayAsleep && config.showProcesses
             && (panelVisible || config.cpuWindow != .realtime)
-        processes = showProcesses ? (panelVisible ? 2 : mode == .responsive ? 5 : mode == .balanced ? 10 : 15) : nil
+        processes = showProcesses ? (mode == .responsive ? 5 : mode == .balanced ? 10 : 30) : nil
     }
 }
 
