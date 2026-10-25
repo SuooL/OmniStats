@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Formatting
 func fmtTemp(_ c: Float, fahrenheit: Bool) -> String {
-    if c.isNaN { return "—" }
+    if !c.isFinite { return "—" }
     return fahrenheit ? String(format: "%.0f°F", c * 9/5 + 32) : String(format: "%.0f°C", c)
 }
 
@@ -92,6 +92,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var topWidgetStyle: TopWidgetStyle = .ring     // SoC/SSD/Fans cluster: ring gauge vs time-series
     var topWidgetWindow: ChartWindow = .fiveMin    // history span for the top-widget charts
     var netChartKind: ChartKind = .line            // expanded network 1h chart: line vs bars
+    var refreshMode: RefreshMode = .balanced
     var autoCheckUpdates: Bool = true
     var autoDownloadUpdates: Bool = true   // auto-download in background, then prompt to install
     var mode: FanMode = .auto
@@ -125,6 +126,7 @@ struct OmniStatsConfig: Codable, Equatable {
 
     /// Linear interpolation of the curve at a temperature, clamped to the endpoints.
     func curvePct(at tempC: Double) -> Double {
+        guard tempC.isFinite else { return .nan }
         let pts = curve.sorted { $0.temp < $1.temp }
         guard let first = pts.first, let last = pts.last else { return 0 }
         if tempC <= first.temp { return first.pct }
@@ -146,7 +148,7 @@ extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
              showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, cpuWindow,
-             topWidgetStyle, topWidgetWindow, netChartKind,
+             topWidgetStyle, topWidgetWindow, netChartKind, refreshMode,
              autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
     init(from decoder: Decoder) throws {
@@ -165,6 +167,7 @@ extension OmniStatsConfig {
         cfg.topWidgetStyle       = try c.decodeIfPresent(TopWidgetStyle.self, forKey: .topWidgetStyle) ?? cfg.topWidgetStyle
         cfg.topWidgetWindow      = try c.decodeIfPresent(ChartWindow.self, forKey: .topWidgetWindow) ?? cfg.topWidgetWindow
         cfg.netChartKind         = try c.decodeIfPresent(ChartKind.self,  forKey: .netChartKind)     ?? cfg.netChartKind
+        cfg.refreshMode          = try c.decodeIfPresent(RefreshMode.self, forKey: .refreshMode)    ?? cfg.refreshMode
         cfg.autoCheckUpdates  = try c.decodeIfPresent(Bool.self,          forKey: .autoCheckUpdates)  ?? cfg.autoCheckUpdates
         cfg.autoDownloadUpdates = try c.decodeIfPresent(Bool.self,        forKey: .autoDownloadUpdates) ?? cfg.autoDownloadUpdates
         cfg.mode              = try c.decodeIfPresent(FanMode.self,        forKey: .mode)              ?? cfg.mode
@@ -173,7 +176,32 @@ extension OmniStatsConfig {
         cfg.rampUpPctPerSec   = try c.decodeIfPresent(Double.self,        forKey: .rampUpPctPerSec)   ?? cfg.rampUpPctPerSec
         cfg.rampDownPctPerSec = try c.decodeIfPresent(Double.self,        forKey: .rampDownPctPerSec) ?? cfg.rampDownPctPerSec
         cfg.deadbandPct       = try c.decodeIfPresent(Double.self,        forKey: .deadbandPct)       ?? cfg.deadbandPct
-        self = cfg
+        self = cfg.validated()
+    }
+
+    // Treat persisted numeric data as untrusted input to hardware control and
+    // drawing. Preserve valid settings while repairing only invalid bounds.
+    func validated() -> OmniStatsConfig {
+        var cfg = self
+        func bounded(_ value: Double, _ range: ClosedRange<Double>, _ fallback: Double) -> Double {
+            value.isFinite ? min(range.upperBound, max(range.lowerBound, value)) : fallback
+        }
+        cfg.manualPct = bounded(manualPct, 0...100, 40)
+        cfg.rampUpPctPerSec = bounded(rampUpPctPerSec, 2...40, 12)
+        cfg.rampDownPctPerSec = bounded(rampDownPctPerSec, 2...40, 6)
+        cfg.deadbandPct = bounded(deadbandPct, 0...10, 2)
+        var points: [CurvePoint] = []
+        var ids = Set<UUID>()
+        for var point in curve.filter({ $0.temp.isFinite && $0.pct.isFinite }).sorted(by: { $0.temp < $1.temp }) {
+            point.temp = bounded(point.temp, 30...95, 60)
+            point.pct = bounded(point.pct, 0...100, 50)
+            guard points.last.map({ point.temp - $0.temp >= 1 }) ?? true else { continue }
+            if !ids.insert(point.id).inserted { point.id = UUID(); ids.insert(point.id) }
+            points.append(point)
+            if points.count == 32 { break }
+        }
+        cfg.curve = points.count >= 2 ? points : Self.defaultCurve
+        return cfg
     }
 }
 
@@ -181,12 +209,18 @@ extension OmniStatsConfig {
 final class ConfigStore: ObservableObject {
     @Published var config: OmniStatsConfig {
         didSet {
-            syncPresentation(config)
-            save()
+            guard config != oldValue else { return }
+            if config.appearance != oldValue.appearance || config.accent != oldValue.accent
+                || config.language != oldValue.language { syncPresentation(config) }
+            pendingSave?.cancel()
+            let task = DispatchWorkItem { [weak self] in self?.flush() }
+            pendingSave = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
         }
     }
     private let key = "OmniStatsConfig.v1"
     private let defaults: UserDefaults
+    private var pendingSave: DispatchWorkItem?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -198,7 +232,8 @@ final class ConfigStore: ObservableObject {
         }
         syncPresentation(config)
     }
-    private func save() {
+    func flush() {
+        pendingSave?.cancel(); pendingSave = nil
         if let data = try? JSONEncoder().encode(config) {
             defaults.set(data, forKey: key)
         }

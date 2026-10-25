@@ -62,6 +62,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let proc: ProcSampler
     private let netProc: NetProcSampler
     private let onOpenSettings: @MainActor () -> Void
+    private let activity: ActivityState
 
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelState = PanelState()
@@ -81,10 +82,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private var bag = Set<AnyCancellable>()
 
     init(mon: Monitor, store: ConfigStore, engine: Engine, net: NetSampler,
-         proc: ProcSampler, netProc: NetProcSampler, onOpenSettings: @MainActor @escaping () -> Void) {
+         proc: ProcSampler, netProc: NetProcSampler, activity: ActivityState = ActivityState(),
+         onOpenSettings: @MainActor @escaping () -> Void) {
         self.mon = mon; self.store = store; self.engine = engine
         self.net = net; self.proc = proc; self.netProc = netProc
         self.onOpenSettings = onOpenSettings
+        self.activity = activity
         super.init()
 
         if let button = statusItem.button {
@@ -118,12 +121,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         } }
         .store(in: &bag)
 
+        proc.enabled = store.config.showProcesses
         configureSamplers()
         refreshLabel()
     }
 
     private func configureSamplers() {
-        proc.enabled = store.config.showProcesses
         proc.windowSeconds = store.config.cpuWindow.seconds
         netProc.enabled = panel?.isVisible == true
             && store.config.showNetworkPanel && panelState.netExpanded
@@ -166,7 +169,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             showTemp: cfg.showTempInMenuBar,
             txText: cfg.showNetworkInMenuBar ? menuBarRate(net.txBps) : "",
             rxText: cfg.showNetworkInMenuBar ? menuBarRate(net.rxBps) : "",
-            tempText: cfg.showTempInMenuBar ? (mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax)) : "",
+            tempText: cfg.showTempInMenuBar ? fmtTemp(mon.socMax, fahrenheit: cfg.fahrenheit) : "",
             txColor: cfg.showNetworkInMenuBar ? tint(net.txBps) : .clear,
             rxColor: cfg.showNetworkInMenuBar ? tint(net.rxBps) : .clear,
             tempColor: cfg.showTempInMenuBar ? tempTint : (mono ? .primary : Theme.accent))
@@ -180,6 +183,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         guard let img = renderer.nsImage else { return }
         img.isTemplate = mono   // mono → adaptive template (legible on any menu-bar tint)
         statusItem.button?.image = img
+        let description = "OmniStats · \(content.tempText) · ↑ \(content.txText) ↓ \(content.rxText)"
+        statusItem.button?.toolTip = description
+        statusItem.button?.setAccessibilityLabel(description)
         lastLabelContent = content
         lastLabelScale = scale
         lastLabelAppearance = cfg.appearance
@@ -265,6 +271,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
                               width: frameSize.width, height: frameSize.height), display: false)
         button.highlight(true)
         panel.makeKeyAndOrderFront(nil)
+        activity.panelVisible = true
         panel.invalidateShadow()
         installMonitors()
     }
@@ -275,6 +282,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         defer { closingPanel = false }
         removeMonitors()
         panel.orderOut(nil)
+        activity.panelVisible = false
         statusItem.button?.highlight(false)
         panelState.netExpanded = false
         netProc.enabled = false          // stop the nettop child as soon as it's off screen
@@ -317,12 +325,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let store: ConfigStore
     private let engine: Engine
     private let updater: Updater
+    private let activity: ActivityState
     private let settingsState = SettingsState()
     private var savedFrame: NSRect?
     private(set) var window: NSWindow?
 
-    init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater) {
+    init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater, activity: ActivityState = ActivityState()) {
         self.mon = mon; self.store = store; self.engine = engine; self.updater = updater
+        self.activity = activity
     }
 
     func show() {
@@ -341,16 +351,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        activity.settingsVisible = true
     }
 
     func windowWillClose(_ notification: Notification) {
         guard let closing = notification.object as? NSWindow, closing === window else { return }
         savedFrame = closing.frame
+        activity.settingsVisible = false
         // A closed NSWindow otherwise retains its NSHostingController, which
         // continues observing the monitor for the rest of the app's lifetime.
         closing.contentViewController = nil
         window = nil
     }
+    func windowDidMiniaturize(_ notification: Notification) { activity.settingsVisible = false }
+    func windowDidDeminiaturize(_ notification: Notification) { activity.settingsVisible = true }
 }
 
 // MARK: - Menu-bar readout

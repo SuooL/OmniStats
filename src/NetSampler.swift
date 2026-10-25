@@ -27,86 +27,84 @@ final class NetSampler: ObservableObject {
     let rxHistory = MetricSeries(retention: 3600)
     let txHistory = MetricSeries(retention: 3600)
 
-    private struct Counter { var rx: UInt64; var tx: UInt64 }
+    struct Counter { var rx: UInt64; var tx: UInt64 }
     private var prev: [String: Counter] = [:]
-    private var prevTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
+    private var prevTime: TimeInterval = 0
     private var chosen = ""
     private var timer: Timer?
+    private(set) var samplingInterval: TimeInterval?
 
-    init() {
-        prev = readCounters()            // prime so the first tick has a baseline
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
-        t.tolerance = 0.1
-        RunLoop.main.add(t, forMode: .common)   // keep ticking while the panel is open
+    init() { setSamplingInterval(2) }
+    deinit { timer?.invalidate() }
+
+    func setSamplingInterval(_ interval: TimeInterval?) {
+        guard interval != samplingInterval else { return }
+        timer?.invalidate(); timer = nil
+        let wasPaused = samplingInterval == nil
+        samplingInterval = interval
+        guard let interval else {
+            prev.removeAll(); prevTime = 0
+            rxBps = 0; txBps = 0; iface = ""
+            return
+        }
+        if wasPaused { prime() }
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.tick() }
+        t.tolerance = interval * 0.15
+        RunLoop.main.add(t, forMode: .common)
         timer = t
     }
 
-    deinit { timer?.invalidate() }
-
-    /// Number of interface rows in the IFMIB tree. Indices are 1…ifCount.
-    private func ifCount() -> Int32 {
-        var mib: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_SYSTEM, IFMIB_IFCOUNT]
-        var n: Int32 = 0
-        var len = MemoryLayout<Int32>.size
-        guard sysctl(&mib, 5, &n, &len, nil, 0) == 0 else { return 0 }
-        return n
+    private func prime() {
+        prev = readCounters(); prevTime = sampleTime()
     }
 
     private func readCounters() -> [String: Counter] {
         var out: [String: Counter] = [:]
-        let n = ifCount()
-        guard n > 0 else { return out }
-        for idx in 1...n {
-            var mib: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFDATA, idx, IFDATA_GENERAL]
-            var d = ifmibdata()
-            var len = MemoryLayout<ifmibdata>.size
-            guard sysctl(&mib, 6, &d, &len, nil, 0) == 0 else { continue }
-            let name = withUnsafePointer(to: d.ifmd_name) { p in
-                p.withMemoryRebound(to: CChar.self, capacity: Int(IFNAMSIZ)) { String(cString: $0) }
+        // IFCOUNT is a count, not the highest index: interface indices can have
+        // holes. Enumerate names and query only physical en* interfaces.
+        guard let interfaces = if_nameindex() else { return out }
+        defer { if_freenameindex(interfaces) }
+        var row = interfaces
+        while row.pointee.if_index != 0, let rawName = row.pointee.if_name {
+            let name = String(cString: rawName)
+            if name.hasPrefix("en") {
+                var mib: [Int32] = [CTL_NET, PF_LINK, NETLINK_GENERIC, IFMIB_IFDATA,
+                                   Int32(row.pointee.if_index), IFDATA_GENERAL]
+                var data = ifmibdata()
+                var length = MemoryLayout<ifmibdata>.size
+                if sysctl(&mib, 6, &data, &length, nil, 0) == 0 {
+                    out[name] = Counter(rx: data.ifmd_data.ifi_ibytes, tx: data.ifmd_data.ifi_obytes)
+                }
             }
-            guard !name.isEmpty else { continue }
-            out[name] = Counter(rx: d.ifmd_data.ifi_ibytes, tx: d.ifmd_data.ifi_obytes)
+            row = row.advanced(by: 1)
         }
         return out
     }
 
-    private func tick() {
-        let now = CFAbsoluteTimeGetCurrent()
-        let dt = max(0.2, now - prevTime)
-        let curr = readCounters()
+    private func tick() { accept(readCounters(), at: sampleTime()) }
 
-        // Deltas are computed on 64-bit counters, so a negative result can only
-        // mean the interface was torn down and re-created (counters reset) —
-        // treat that as "no data" rather than a bogus spike.
-        func delta(_ name: String) -> (rx: Double, tx: Double)? {
-            guard let p = prev[name], let c = curr[name], c.rx >= p.rx, c.tx >= p.tx else { return nil }
-            return (Double(c.rx - p.rx), Double(c.tx - p.tx))
-        }
-
-        var best = "", bestActivity = -1.0, bestRx = 0.0, bestTx = 0.0
-        for name in curr.keys where name.hasPrefix("en") {
-            guard let d = delta(name) else { continue }
-            if d.rx + d.tx > bestActivity {
-                bestActivity = d.rx + d.tx; best = name
-                bestRx = d.rx / dt; bestTx = d.tx / dt
+    // Independent of sysctl so counter reset/removal behavior is testable.
+    func accept(_ current: [String: Counter], at now: TimeInterval) {
+        defer { prev = current; prevTime = now }
+        let dt = now - prevTime
+        guard prevTime > 0, dt > 0, dt < 60 else { rxBps = 0; txBps = 0; return }
+        var best = "", activity = -1.0, rx = 0.0, tx = 0.0
+        for name in current.keys.sorted() {
+            guard let old = prev[name], let new = current[name],
+                  new.rx >= old.rx, new.tx >= old.tx else { continue }
+            let drx = Double(new.rx - old.rx), dtx = Double(new.tx - old.tx)
+            if drx + dtx > activity || (drx + dtx == activity && name == chosen) {
+                best = name; activity = drx + dtx
+                rx = drx / dt; tx = dtx / dt
             }
         }
-        // Idle tick: keep the previously chosen interface and report its (near-zero) rate.
-        if bestActivity <= 0, !chosen.isEmpty, let d = delta(chosen) {
-            best = chosen
-            bestRx = d.rx / dt
-            bestTx = d.tx / dt
-        }
-        if !best.isEmpty { chosen = best }
-
-        prev = curr
-        prevTime = now
-        rxBps = max(0, bestRx)
-        txBps = max(0, bestTx)
-        iface = chosen
-        rxHistory.record(rxBps, at: now)
-        txHistory.record(txBps, at: now)
+        chosen = best
+        rxHistory.record(rx, at: now, cadence: samplingInterval ?? 2)
+        txHistory.record(tx, at: now, cadence: samplingInterval ?? 2)
+        rxBps = rx; txBps = tx
+        if iface != chosen { iface = chosen }
     }
+
 }
 
 // Human-readable byte-rate: "512 B/s", "12 KB/s", "3.4 MB/s", "1.05 GB/s".

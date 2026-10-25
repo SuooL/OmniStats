@@ -1,6 +1,7 @@
 // OmniStats sensor implementation (Apple Silicon).
 #import <CoreFoundation/CoreFoundation.h>
 #import "sensors.h"
+#import <stdlib.h>
 #import "smc.h"
 
 // ---- Private IOHIDEventSystemClient temperature API (undocumented, stable since M1) ----
@@ -35,75 +36,98 @@ static CFDictionaryRef tempMatching(void){
     CFRelease(p); CFRelease(u); return d;
 }
 
-void cb_sensors_init(void){
+enum SensorKind { Skip, Battery, SSD, SoC, Other };
+static unsigned char *gKinds = NULL;
+static double gBoundsTime = 0;
+
+static int nameHas(CFStringRef name, CFStringRef part) {
+    return name && CFStringFind(name, part, kCFCompareCaseInsensitive).location != kCFNotFound;
+}
+
+static unsigned char classify(CFStringRef name) {
+    if(nameHas(name, CFSTR("battery"))) return Battery;
+    if(nameHas(name, CFSTR("NAND")) || nameHas(name, CFSTR("SSD"))) return SSD;
+    if(nameHas(name, CFSTR("tcal")) || nameHas(name, CFSTR("tdev"))) return Skip;
+    if(nameHas(name, CFSTR("tdie")) || nameHas(name, CFSTR("SOC")) ||
+       nameHas(name, CFSTR("CPU")) || nameHas(name, CFSTR("GPU"))) return SoC;
+    return Other;
+}
+
+void cb_sensors_init(void) {
     smcOpen();
-    gHID = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
-    if(gHID){
-        CFDictionaryRef m = tempMatching();
-        IOHIDEventSystemClientSetMatching(gHID, m);
+    if(!gHID) gHID = IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+    if(gServices) { CFRelease(gServices); gServices = NULL; }
+    free(gKinds); gKinds = NULL;
+    if(gHID) {
+        CFDictionaryRef matching = tempMatching();
+        IOHIDEventSystemClientSetMatching(gHID, matching);
         gServices = IOHIDEventSystemClientCopyServices(gHID);
-        CFRelease(m);
+        CFRelease(matching);
+    }
+    long count = gServices ? CFArrayGetCount(gServices) : 0;
+    if(count > 0) gKinds = calloc((size_t)count, 1);
+    for(long i = 0; gKinds && i < count; i++) {
+        IOHIDServiceClientRef service = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gServices, i);
+        CFTypeRef property = IOHIDServiceClientCopyProperty(service, CFSTR("Product"));
+        CFStringRef name = property && CFGetTypeID(property) == CFStringGetTypeID() ? (CFStringRef)property : NULL;
+        gKinds[i] = classify(name);
+        if(property) CFRelease(property);
     }
     int fn = smcReadU8("FNum");
-    gFanCount = (fn>0 && fn<=8) ? fn : 0;
+    gFanCount = fn > 0 && fn <= 8 ? fn : 0;
+    for(int i = 0; i < 8; i++) gFanMin[i] = gFanMax[i] = NAN;
+    gBoundsTime = 0;
 }
 
-static int nameHas(CFStringRef s, const char *sub){
-    if(!s) return 0;
-    CFStringRef q = CFStringCreateWithCString(0, sub, kCFStringEncodingUTF8);
-    Boolean r = CFStringFind(s, q, kCFCompareCaseInsensitive).location != kCFNotFound;
-    CFRelease(q); return r;
+static float temperature(long index) {
+    IOHIDServiceClientRef service = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gServices, index);
+    IOHIDEventRef event = IOHIDServiceClientCopyEvent(service, kHIDTemperature, 0, 0);
+    if(!event) return NAN;
+    double value = IOHIDEventGetFloatValue(event, HIDFieldBase(kHIDTemperature));
+    CFRelease(event);
+    return isfinite(value) && value > -20 && value < 150 ? (float)value : NAN;
 }
 
-void cb_refresh(void){
-    // --- temperatures ---
-    float socSum=0; int socN=0; float socMax=NAN, ssd=NAN, batt=NAN;
-    long n = gServices ? CFArrayGetCount(gServices) : 0;
-    for(long i=0;i<n;i++){
-        IOHIDServiceClientRef sc = (IOHIDServiceClientRef)CFArrayGetValueAtIndex(gServices,i);
-        CFStringRef nm = (CFStringRef)IOHIDServiceClientCopyProperty(sc, CFSTR("Product"));
-        IOHIDEventRef e = IOHIDServiceClientCopyEvent(sc, kHIDTemperature, 0, 0);
-        if(e){
-            double c = IOHIDEventGetFloatValue(e, HIDFieldBase(kHIDTemperature));
-            if(nm && c>-20 && c<150){
-                if(nameHas(nm,"battery")) batt = c;
-                else if(nameHas(nm,"NAND") || nameHas(nm,"SSD")){ if(isnan(ssd)||c>ssd) ssd=c; }
-                else if(nameHas(nm,"tcal") || nameHas(nm,"tdev")) { /* calibration/inactive: skip */ }
-                else if(nameHas(nm,"tdie") || nameHas(nm,"SOC") || nameHas(nm,"CPU") || nameHas(nm,"GPU")){
-                    if(isnan(socMax)||c>socMax) socMax=c; socSum+=c; socN++;
-                }
+void cb_refresh(void) {
+    float sum = 0, maximum = NAN, ssd = NAN, battery = NAN;
+    int samples = 0;
+    long count = gServices && gKinds ? CFArrayGetCount(gServices) : 0;
+    // Classification is immutable until rediscovery. Calibration and unrelated
+    // sensors no longer incur an IPC round trip on every sample.
+    for(long i = 0; i < count; i++) {
+        unsigned char kind = gKinds[i];
+        if(kind == Skip || kind == Other) continue;
+        float value = temperature(i);
+        if(!isfinite(value)) continue;
+        if(kind == Battery) battery = value;
+        else if(kind == SSD) { if(isnan(ssd) || value > ssd) ssd = value; }
+        else { if(isnan(maximum) || value > maximum) maximum = value; sum += value; samples++; }
+    }
+    if(samples == 0) {
+        for(long i = 0; i < count; i++) {
+            if(gKinds[i] != Other) continue;
+            float value = temperature(i);
+            if(value > 10 && value < 120) {
+                if(isnan(maximum) || value > maximum) maximum = value;
+                sum += value; samples++;
             }
-            CFRelease(e);
-        }
-        if(nm) CFRelease(nm);
-    }
-    // Fallback for models whose die sensors are named differently: use any plausible
-    // core temperature (10–120°C, excluding battery/ssd) so SoC is never empty.
-    if(socN==0){
-        for(long i=0;i<n;i++){
-            IOHIDServiceClientRef sc=(IOHIDServiceClientRef)CFArrayGetValueAtIndex(gServices,i);
-            CFStringRef nm=(CFStringRef)IOHIDServiceClientCopyProperty(sc,CFSTR("Product"));
-            IOHIDEventRef e=IOHIDServiceClientCopyEvent(sc,kHIDTemperature,0,0);
-            if(e){ double c=IOHIDEventGetFloatValue(e,HIDFieldBase(kHIDTemperature));
-                if(c>10&&c<120&&!nameHas(nm,"battery")&&!nameHas(nm,"NAND")&&!nameHas(nm,"tcal")&&!nameHas(nm,"tdev")){
-                    if(isnan(socMax)||c>socMax) socMax=c; socSum+=c; socN++; }
-                CFRelease(e); }
-            if(nm) CFRelease(nm);
         }
     }
-    gSocMax = socMax; gSocAvg = socN? socSum/socN : NAN; gSsd = ssd; gBattery = batt;
-
-    // --- power / voltage ---
-    gPower = smcReadFloat("PSTR");
-    gVolt  = smcReadFloat("VP0R");
-
-    // --- fans ---
-    for(int i=0;i<gFanCount;i++){
-        char a[8],mn[8],mx[8],md[8];
-        smcFanKey(a,i,"Ac"); smcFanKey(mn,i,"Mn"); smcFanKey(mx,i,"Mx"); smcFanModeKey(md,i);
-        gFanRpm[i]=smcReadFloat(a); gFanMin[i]=smcReadFloat(mn);
-        gFanMax[i]=smcReadFloat(mx); gFanMode[i]=smcReadU8(md);
+    gSocMax = maximum; gSocAvg = samples ? sum / samples : NAN;
+    gSsd = ssd; gBattery = battery;
+    gPower = smcReadFloat("PSTR"); gVolt = smcReadFloat("VP0R");
+    double now = CFAbsoluteTimeGetCurrent();
+    int readBounds = gBoundsTime == 0 || now - gBoundsTime >= 60 || now < gBoundsTime;
+    for(int i = 0; i < gFanCount; i++) {
+        char actual[8], minimum[8], maximumKey[8], mode[8];
+        smcFanKey(actual, i, "Ac"); smcFanKey(minimum, i, "Mn");
+        smcFanKey(maximumKey, i, "Mx"); smcFanModeKey(mode, i);
+        gFanRpm[i] = smcReadFloat(actual); gFanMode[i] = smcReadU8(mode);
+        if(readBounds || !isfinite(gFanMin[i]) || !isfinite(gFanMax[i])) {
+            gFanMin[i] = smcReadFloat(minimum); gFanMax[i] = smcReadFloat(maximumKey);
+        }
     }
+    if(readBounds) gBoundsTime = now;
 }
 
 float cb_soc_max(void){ return gSocMax; }

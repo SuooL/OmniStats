@@ -16,7 +16,7 @@ final class SettingsState: ObservableObject {
 }
 
 struct SettingsView: View {
-    @ObservedObject var mon: Monitor
+    let mon: Monitor
     @ObservedObject var store: ConfigStore
     let engine: Engine
     let updater: Updater
@@ -79,7 +79,7 @@ struct SettingsView: View {
 struct FansPane: View {
     @ObservedObject var mon: Monitor
     @ObservedObject var store: ConfigStore
-    let engine: Engine
+    @ObservedObject var engine: Engine
     @State private var showAdvanced = false
 
     var body: some View {
@@ -89,7 +89,13 @@ struct FansPane: View {
             if mon.fanCount == 0 {
                 infoCard(L.t("f.noFan.title"), L.t("f.noFan.body"))
             } else {
-                if !mon.helperAvailable { enableBanner }
+                if !mon.helperAvailable || mon.helperNeedsUpdate { enableBanner }
+                if engine.safetyPaused {
+                    Text(L.t("control.sensorPaused")).font(.system(size: 12)).foregroundStyle(.orange)
+                }
+                if let error = mon.controlError {
+                    Text(error).font(.system(size: 12)).foregroundStyle(.red)
+                }
                 modePicker
                 HStack(alignment: .top, spacing: 18) {
                     mainColumn.frame(maxWidth: .infinity, alignment: .leading)
@@ -243,12 +249,12 @@ struct FansPane: View {
         HStack(spacing: 12) {
             Image(systemName: "lock.shield.fill").foregroundStyle(Theme.accent)
             VStack(alignment: .leading, spacing: 2) {
-                Text(L.t("f.enableBannerTitle")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text(L.t("f.enableBannerBody")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
+                Text(L.t(mon.helperNeedsUpdate ? "control.update" : "f.enableBannerTitle")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(L.t(mon.helperNeedsUpdate ? "control.updateBody" : "f.enableBannerBody")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
             }
             Spacer()
             Button { mon.enableControl() } label: {
-                HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? L.t("m.enabling") : L.t("f.enableShort")) }
+                HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? L.t("m.enabling") : L.t(mon.helperNeedsUpdate ? "control.updateShort" : "f.enableShort")) }
             }.buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(mon.busy)
         }
         .padding(12).frame(maxWidth: .infinity)
@@ -284,7 +290,7 @@ struct GeneralPane: View {
     private var cfg: OmniStatsConfig { store.config }
 
     var body: some View {
-        ScrollView {
+        Group {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L.t("g.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
@@ -318,6 +324,16 @@ struct GeneralPane: View {
                             ForEach(MenuNumberColorMode.allCases) { m in Text(m.title).tag(m) }
                         }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
                     }
+                }
+
+                cardSection(L.t("refresh.title")) {
+                    row(L.t("refresh.mode")) {
+                        Picker("", selection: bind(\.refreshMode)) {
+                            ForEach(RefreshMode.allCases) { mode in Text(mode.title).tag(mode) }
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 240)
+                    }
+                    Text(L.t("refresh.body")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 // Charts / visualization

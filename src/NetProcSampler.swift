@@ -1,121 +1,157 @@
 import Foundation
+import Darwin
 
 struct NetProcUsage: Identifiable {
     var id: String { name }
     let name: String
-    let rxBps: Double     // download, bytes/sec
-    let txBps: Double     // upload,   bytes/sec
+    let rxBps: Double
+    let txBps: Double
 }
 
-// Top processes by network throughput, merged per app.
-//
-// macOS has no public per-process bandwidth API, so this shells out to the
-// built-in `nettop` (works without root) in streaming log mode:
-//   nettop -P -x -l 0 -s 2 -J bytes_in,bytes_out
-// Each refresh prints a block of "name.pid  bytes_in  bytes_out" (cumulative).
-// We diff consecutive blocks into bytes/sec, resolve each PID to its bundle
-// name via `appDisplayName` (same merge as ProcSampler), sum per app, and
-// publish the top 5. Only runs while `enabled` (the network panel is expanded),
-// so the child process exists only when its output is on screen.
-final class NetProcSampler: ObservableObject {
-    @Published var top: [NetProcUsage] = []
-
-    var enabled = false { didSet { if enabled != oldValue { enabled ? start() : stop() } } }
-
-    private let interval = 2.0
-    private var proc: Process?
-    private var readHandle: FileHandle?
-    private let queue = DispatchQueue(label: "com.omnistats.netproc")
+// nettop -l emits whitespace-separated blocks with cumulative byte counters.
+// Parse rows immediately instead of retaining every line of a block. Both the
+// partial line and process table are bounded even if the subprocess misbehaves.
+struct NetTopParser {
+    struct Counter { let rx: UInt64; let tx: UInt64 }
+    struct Frame { let time: Double; let counters: [pid_t: Counter] }
     private var buffer = Data()
-    private var block: [String] = []               // rows accumulated for the current block
-    private var prev: [pid_t: (rx: UInt64, tx: UInt64)] = [:]
-    private var prevTime: CFAbsoluteTime = 0
+    private var rows: [pid_t: Counter] = [:]
+    private var headerTime: Double?
+    private(set) var overflowed = false
 
-    private func start() {
-        queue.async { [weak self] in self?.launch() }
-    }
-
-    private func launch() {
-        guard proc == nil else { return }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        p.arguments = ["-P", "-x", "-l", "0", "-s", String(Int(interval)), "-J", "bytes_in,bytes_out"]
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = FileHandle.nullDevice
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
-            let d = h.availableData
-            guard !d.isEmpty else { return }
-            self?.queue.async { self?.consume(d) }
-        }
-        p.terminationHandler = { [weak self] _ in
-            self?.queue.async { self?.proc = nil }
-        }
-        do { try p.run() } catch { return }
-        prev = [:]; prevTime = 0; buffer.removeAll(); block.removeAll()
-        proc = p
-        readHandle = pipe.fileHandleForReading
-    }
-
-    private func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.readHandle?.readabilityHandler = nil
-            self.readHandle = nil
-            self.proc?.terminate()
-            self.proc = nil
-            self.buffer.removeAll(); self.block.removeAll(); self.prev = [:]
-            DispatchQueue.main.async { self.top = [] }
-        }
-    }
-
-    // MARK: parse (on `queue`)
-    private func consume(_ d: Data) {
-        buffer.append(d)
-        while let nl = buffer.firstIndex(of: 0x0A) {
-            let lineData = buffer.subdata(in: buffer.startIndex..<nl)
-            buffer.removeSubrange(buffer.startIndex...nl)
-            let line = String(decoding: lineData, as: UTF8.self)
-            if line.contains("bytes_in") {
-                if !block.isEmpty { finishBlock() }   // header starts a new block
-                block.removeAll()
-            } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                block.append(line)
+    mutating func consume(_ data: Data, at time: Double) -> [Frame] {
+        guard buffer.count + data.count <= 1_048_576 else { resetOverflow(); return [] }
+        buffer.append(data)
+        var frames: [Frame] = []
+        var cursor = buffer.startIndex
+        while cursor < buffer.endIndex, let newline = buffer[cursor...].firstIndex(of: 10) {
+            let line = String(decoding: buffer[cursor..<newline], as: UTF8.self)
+            cursor = buffer.index(after: newline)
+            let tokens = line.split(whereSeparator: { $0.isWhitespace })
+            if tokens.contains("bytes_in") && tokens.contains("bytes_out") {
+                if let headerTime { frames.append(Frame(time: headerTime, counters: rows)) }
+                rows.removeAll(keepingCapacity: true); headerTime = time
+            } else if headerTime != nil, tokens.count >= 3,
+                      let rx = UInt64(tokens[tokens.count - 2]), let tx = UInt64(tokens[tokens.count - 1]) {
+                let identifier = tokens[tokens.count - 3]
+                if let dot = identifier.lastIndex(of: "."),
+                   let pid = pid_t(identifier[identifier.index(after: dot)...]), pid > 0 {
+                    guard rows.count < 8192 || rows[pid] != nil else { resetOverflow(); return [] }
+                    rows[pid] = Counter(rx: rx, tx: tx)
+                }
             }
         }
+        if cursor > buffer.startIndex { buffer.removeSubrange(buffer.startIndex..<cursor) }
+        if buffer.count > 4096 { resetOverflow(); return [] }
+        return frames
     }
+    private mutating func resetOverflow() {
+        buffer.removeAll(); rows.removeAll(); headerTime = nil; overflowed = true
+    }
+}
 
-    private func finishBlock() {
-        var cur: [pid_t: (rx: UInt64, tx: UInt64)] = [:]
-        for line in block {
-            let toks = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-            guard toks.count >= 3,
-                  let txOut = UInt64(toks[toks.count - 1]),
-                  let rxIn = UInt64(toks[toks.count - 2]),
-                  let dot = toks[0].lastIndex(of: "."),
-                  let pid = pid_t(toks[0][toks[0].index(after: dot)...])
-            else { continue }
-            cur[pid] = (rxIn, txOut)
+struct NetTopRates {
+    private var previous: NetTopParser.Frame?
+    mutating func consume(_ frame: NetTopParser.Frame, name: (pid_t) -> String = appDisplayName) -> [NetProcUsage]? {
+        defer { previous = frame }
+        guard let previous else { return nil }
+        let dt = frame.time - previous.time
+        guard dt > 0, dt < 60 else { return [] }
+        var values: [String: (rx: Double, tx: Double)] = [:]
+        for (pid, current) in frame.counters {
+            guard let old = previous.counters[pid], current.rx >= old.rx, current.tx >= old.tx else { continue }
+            let rx = Double(current.rx - old.rx) / dt, tx = Double(current.tx - old.tx) / dt
+            guard rx + tx >= 1 else { continue }
+            let app = name(pid)
+            values[app, default: (0, 0)].rx += rx
+            values[app, default: (0, 0)].tx += tx
         }
+        return values.sorted {
+            let a = $0.value.rx + $0.value.tx, b = $1.value.rx + $1.value.tx
+            return a == b ? $0.key < $1.key : a > b
+        }.prefix(5).map { NetProcUsage(name: $0.key, rxBps: $0.value.rx, txBps: $0.value.tx) }
+    }
+}
 
-        let now = CFAbsoluteTimeGetCurrent()
-        defer { prev = cur; prevTime = now }
-        guard prevTime > 0 else { return }              // first block: baseline only
-        let dt = max(0.5, now - prevTime)
+// Process lifecycle and published state are main-queue owned. Each launch gets
+// an independent parser and generation; callbacks from an old child cannot
+// clear or overwrite a newer session after rapid expand/collapse interactions.
+final class NetProcSampler: ObservableObject {
+    enum State { case stopped, warmingUp, running, unavailable }
+    @Published var top: [NetProcUsage] = []
+    @Published private(set) var state: State = .stopped
+    var enabled = false { didSet { if enabled != oldValue { update() } } }
+    var suspended = false { didSet { if suspended != oldValue { update() } } }
+    private var process: Process?
+    var processIdentifier: pid_t? { process?.processIdentifier }
+    private var readSource: DispatchSourceRead?
+    private var generation = UUID()
+    private let parseQueue = DispatchQueue(label: "com.omnistats.netproc", qos: .utility)
+    private final class Session { var parser = NetTopParser(); var rates = NetTopRates() }
 
-        var byName: [String: (rx: Double, tx: Double)] = [:]
-        for (pid, c) in cur {
-            guard let p = prev[pid], c.rx >= p.rx, c.tx >= p.tx else { continue }
-            let drx = Double(c.rx - p.rx) / dt, dtx = Double(c.tx - p.tx) / dt
-            if drx + dtx < 1 { continue }               // ignore idle
-            let name = appDisplayName(pid)
-            byName[name, default: (0, 0)].rx += drx
-            byName[name, default: (0, 0)].tx += dtx
+    deinit {
+        readSource?.cancel()
+        if process?.isRunning == true { process?.terminate() }
+    }
+    private func update() { enabled && !suspended ? start() : stop() }
+    private func start() {
+        guard process == nil else { return }
+        generation = UUID()
+        let id = generation, session = Session()
+        // nettop fully buffers stdout when attached to a pipe. A PTY makes
+        // each sample arrive promptly even on machines with few processes.
+        var master: Int32 = -1, slave: Int32 = -1
+        guard openpty(&master, &slave, nil, nil, nil) == 0 else { state = .unavailable; return }
+        _ = fcntl(master, F_SETFL, O_NONBLOCK)
+        _ = fcntl(master, F_SETFD, FD_CLOEXEC)
+        let writer = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
+        child.arguments = ["-n", "-P", "-x", "-l", "0", "-s", "2", "-J", "bytes_in,bytes_out"]
+        child.standardOutput = writer; child.standardError = FileHandle.nullDevice
+        child.standardInput = FileHandle.nullDevice
+        state = .warmingUp
+        let fd = master
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: parseQueue)
+        source.setCancelHandler { close(fd) }
+        source.setEventHandler { [weak self] in
+            var bytes = [UInt8](repeating: 0, count: 65536)
+            let count = read(fd, &bytes, bytes.count)
+            if count < 0 && (errno == EAGAIN || errno == EINTR) { return }
+            guard count > 0 else {
+                DispatchQueue.main.async { [weak self] in self?.finished(id) }
+                return
+            }
+            let frames = session.parser.consume(Data(bytes.prefix(count)), at: sampleTime())
+            if session.parser.overflowed {
+                DispatchQueue.main.async { [weak self] in self?.finished(id) }
+                return
+            }
+            for frame in frames {
+                guard let ranked = session.rates.consume(frame) else { continue }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.generation == id, self.enabled, !self.suspended else { return }
+                    self.top = ranked; self.state = .running
+                }
+            }
         }
-
-        let ranked = byName.sorted { ($0.value.rx + $0.value.tx) > ($1.value.rx + $1.value.tx) }
-            .prefix(5)
-            .map { NetProcUsage(name: $0.key, rxBps: $0.value.rx, txBps: $0.value.tx) }
-        DispatchQueue.main.async { [weak self] in self?.top = ranked }
+        readSource = source; source.resume()
+        child.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.finished(id) }
+        }
+        do {
+            try child.run(); process = child
+            try? writer.close()
+        } catch { try? writer.close(); finished(id) }
+    }
+    private func finished(_ id: UUID) {
+        guard generation == id else { return }
+        stop(); state = .unavailable
+    }
+    private func stop() {
+        generation = UUID()
+        readSource?.cancel(); readSource = nil
+        if process?.isRunning == true { process?.terminate() }
+        process = nil; top = []; state = .stopped
     }
 }

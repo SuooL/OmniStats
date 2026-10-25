@@ -74,9 +74,9 @@ struct MenuPanel: View {
             // Network sits below the CPU/process section; the row expands in place.
             if store.config.showNetworkPanel { networkSection }
 
-            if !mon.helperAvailable && mon.fanCount > 0 {
+            if (!mon.helperAvailable || mon.helperNeedsUpdate) && mon.fanCount > 0 {
                 Button { mon.enableControl() } label: {
-                    HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? L.t("m.enabling") : L.t("m.enableControl")) }
+                    HStack { if mon.busy { ProgressView().controlSize(.small) }; Text(mon.busy ? L.t("m.enabling") : L.t(mon.helperNeedsUpdate ? "control.update" : "m.enableControl")) }
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(mon.busy)
             }
@@ -129,7 +129,7 @@ struct MenuPanel: View {
     // The unified line/bars chart: SoC/SSD/FANS overlaid on a single 0–100 scale,
     // each in a fixed series color, with a legend carrying the live values.
     private var combinedChart: some View {
-        let now = CFAbsoluteTimeGetCurrent()
+        let now = sampleTime()
         let win = store.config.topWidgetWindow.seconds
         let kind: ChartKind = store.config.topWidgetStyle == .bars ? .bars : .line
         var series: [MultiSparkline.Series] = [
@@ -194,7 +194,7 @@ struct MenuPanel: View {
 
             if netExpanded {
                 DualSparkline(up: net.txHistory.samples, down: net.rxHistory.samples,
-                              windowSeconds: 3600, now: CFAbsoluteTimeGetCurrent(),
+                              windowSeconds: 3600, now: sampleTime(),
                               kind: store.config.netChartKind)
                 netProcList
             }
@@ -211,7 +211,11 @@ struct MenuPanel: View {
     private var netProcList: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(L.t("m.netProcHeader")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
-            if netProc.top.isEmpty {
+            if netProc.state == .warmingUp {
+                Text(L.t("network.warmingUp")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            } else if netProc.state == .unavailable {
+                Text(L.t("network.unavailable")).font(.system(size: 11)).foregroundStyle(.orange)
+            } else if netProc.top.isEmpty {
                 Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
             } else {
                 ForEach(netProc.top) { p in

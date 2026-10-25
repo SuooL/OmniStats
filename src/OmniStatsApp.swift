@@ -8,7 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let net = NetSampler()
     let proc = ProcSampler()
     let netProc = NetProcSampler()
+    let activity = ActivityState()
     lazy var engine = Engine(monitor: monitor, store: store)
+    private lazy var sampling = SamplingCoordinator(monitor: monitor, net: net, proc: proc,
+        netProc: netProc, engine: engine, store: store, activity: activity)
 
     // Sparkle: start the updater immediately; scheduled checks + UI are driven by
     // the SU* keys in Info.plist. `updater` is a thin SwiftUI wrapper for Settings.
@@ -24,11 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncPresentation(store.config)
         _ = engine   // start the control loop
 
-        let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater)
+        let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater, activity: activity)
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
+            activity: activity,
             onOpenSettings: { settings.show() })
+        _ = sampling
 
         // Delivered on the main queue, so the main-actor-isolated window work is
         // safe to run synchronously.
@@ -45,7 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ n: Notification) {
-        monitor.revertAll()
+        store.flush()
+        monitor.shutdown()
     }
 
     // Launch args (used for screenshots / deep-linking).

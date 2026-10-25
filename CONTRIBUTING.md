@@ -31,11 +31,13 @@ gh pr create --base dev            # PR into dev
 Cutting a release:
 
 ```bash
-git switch main && git merge --no-ff dev
-git tag v1.1.0 && git push origin main --tags   # release.yml builds & publishes
+gh pr create --base main --head dev
+# Wait for CI, merge the PR, then tag the resulting main commit.
+git fetch origin && git switch main && git pull --ff-only
+git tag vX.Y.Z && git push origin vX.Y.Z   # release.yml builds & publishes
 ```
 
-Bump `CFBundleShortVersionString` in `packaging/Info.plist` to match the tag —
+Bump both `CFBundleVersion` and `CFBundleShortVersionString` in `packaging/Info.plist` to match the tag —
 the in-app updater compares against it.
 
 ## Build
@@ -47,12 +49,16 @@ needed.
 make            # build dist/OmniStats.app + helper
 make run        # build and launch
 make test       # CLI smoke test of the sensor/control layer
+make test-logic   # hardware-isolated logic, socket transport, and helper safety regressions
 make test-runtime # AppKit regressions with simulated sensors (logged-in macOS desktop)
 make clean
 ```
 
 CI (`.github/workflows/ci.yml`) builds every push/PR to `main`/`dev` on an
-Apple Silicon runner.
+Apple Silicon runner, and runs `make test-logic`. The release workflow repeats
+this safety gate and rejects a tag that does not match both bundle versions.
+Use `make bundle DIST=dist/release-validation` when a running local app lives
+in `dist/OmniStats.app`, so validation does not replace its bundle.
 
 `make test-runtime` uses isolated preferences and hardware stubs, so it never
 connects to the installed fan-control helper. It checks batched/unchanged menu-bar

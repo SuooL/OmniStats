@@ -18,6 +18,9 @@ jobs:
       - name: Build app + helper
         run: make
 
+      - name: Logic and helper safety regressions
+        run: make test-logic
+
       - name: Verify outputs
         run: |
           test -d dist/OmniStats.app
