@@ -5,14 +5,12 @@ import AppKit
 // the chosen theme. No-op when already correct.
 func applyAppChrome(_ m: AppearanceMode) {
     let want: NSAppearance.Name = (m == .dark) ? .darkAqua : .aqua
-    if NSApp.appearance?.name != want {
-        DispatchQueue.main.async { NSApp.appearance = NSAppearance(named: want) }
-    }
+    if NSApp.appearance?.name != want { NSApp.appearance = NSAppearance(named: want) }
 }
 
-// Push the config's presentation choices into the global render state. Called at
-// the top of every root view body so each render reflects the current theme,
-// accent, and language (SwiftUI re-runs the body when `ConfigStore` publishes).
+// Apply presentation once per configuration change, outside SwiftUI body
+// evaluation. Reading/mutating AppKit appearance from a body can establish
+// observation dependencies that feed back into AppKit/SwiftUI layout.
 func syncPresentation(_ cfg: OmniStatsConfig) {
     Theme.mode = cfg.appearance
     Theme.accentPreset = cfg.accent
@@ -97,7 +95,9 @@ final class Monitor: ObservableObject {
         fanCount = Int(cb_fan_count())
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in self?.refresh() }
+        timer?.tolerance = 0.2
     }
+    deinit { timer?.invalidate() }
     func refresh() {
         cb_refresh()
         socMax = cb_soc_max(); socAvg = cb_soc_avg()
@@ -156,6 +156,7 @@ final class Engine: ObservableObject {
         self.store = store
         timer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in self?.step() }
     }
+    deinit { timer?.invalidate() }
 
     private func pctToRpm(_ fan: Int, _ pct: Double) -> Int {
         let mn = fan < monitor.fanMin.count && !monitor.fanMin[fan].isNaN ? Double(monitor.fanMin[fan]) : 1200

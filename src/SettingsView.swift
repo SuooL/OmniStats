@@ -10,16 +10,20 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 // Set from launch args (--section) so screenshots can open a specific pane.
 enum LaunchOptions { static var section: SettingsSection? }
 
+// Keep navigation independently of the hosting tree, which is released on close.
+final class SettingsState: ObservableObject {
+    @Published var section: SettingsSection = .fans
+}
+
 struct SettingsView: View {
     @ObservedObject var mon: Monitor
     @ObservedObject var store: ConfigStore
     let engine: Engine
     let updater: Updater
-    @State private var section: SettingsSection = LaunchOptions.section ?? .fans
+    @ObservedObject var state: SettingsState
 
     var body: some View {
-        syncPresentation(store.config)
-        return HStack(spacing: 0) {
+        HStack(spacing: 0) {
             sidebar
             Divider().overlay(Theme.line)
             ScrollView {
@@ -32,7 +36,7 @@ struct SettingsView: View {
                minHeight: 600, idealHeight: 660, maxHeight: .infinity)
         .background(Theme.bg)
         .environment(\.colorScheme, store.config.appearance.colorScheme)
-        .onAppear { if let s = LaunchOptions.section { section = s; LaunchOptions.section = nil } }
+        .onAppear { if let s = LaunchOptions.section { state.section = s; LaunchOptions.section = nil } }
     }
 
     private var sidebar: some View {
@@ -43,15 +47,15 @@ struct SettingsView: View {
             }.padding(.bottom, 16).padding(.horizontal, 6).padding(.top, 8)
 
             ForEach(SettingsSection.allCases) { s in
-                Button { section = s } label: {
+                Button { state.section = s } label: {
                     HStack(spacing: 9) {
                         Image(systemName: s.icon).frame(width: 18)
                         Text(s.title).font(.system(size: 13, weight: .medium))
                         Spacer()
                     }
                     .padding(.vertical, 7).padding(.horizontal, 8)
-                    .background(section == s ? Theme.accent.opacity(0.16) : .clear)
-                    .foregroundStyle(section == s ? Theme.accent : Theme.ink2)
+                    .background(state.section == s ? Theme.accent.opacity(0.16) : .clear)
+                    .foregroundStyle(state.section == s ? Theme.accent : Theme.ink2)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
@@ -63,7 +67,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private var content: some View {
-        switch section {
+        switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
         case .general: GeneralPane(store: store)
         case .about:   AboutPane(mon: mon, store: store, updater: updater)
