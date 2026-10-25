@@ -95,9 +95,7 @@ struct Sparkline: View {
             } else {
                 // One area+line per contiguous run, so sampling gaps stay gaps.
                 for run in segments(pts, from: x0) {
-                    var line = Path()
-                    line.move(to: CGPoint(x: X(run[0].t), y: Y(run[0].v)))
-                    for p in run.dropFirst() { line.addLine(to: CGPoint(x: X(p.t), y: Y(p.v))) }
+                    let line = SmoothHistory.path(run.map { CGPoint(x: X($0.t), y: Y($0.v)) })
                     var area = line
                     area.addLine(to: CGPoint(x: X(run.last!.t), y: H))
                     area.addLine(to: CGPoint(x: X(run[0].t), y: H))
@@ -164,9 +162,7 @@ struct MultiSparkline: View {
             } else {
                 for s in series {
                     for run in segments(s.samples, from: x0) {
-                        var line = Path()
-                        line.move(to: CGPoint(x: X(run[0].t), y: Y(run[0].v)))
-                        for p in run.dropFirst() { line.addLine(to: CGPoint(x: X(p.t), y: Y(p.v))) }
+                        let line = SmoothHistory.path(run.map { CGPoint(x: X($0.t), y: Y($0.v)) })
                         ctx.stroke(line, with: .color(s.color),
                                    style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                     }

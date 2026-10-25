@@ -22,14 +22,18 @@ power draw, and fan RPM at a glance. Unlike most monitors, it can **actually
 control the fans** on Apple Silicon Macs — with a temperature→speed curve and
 hardware-friendly, gradual ramping.
 
-> Thermals are the first module. Network, disk, and battery panels are on the
-> roadmap — OmniStats is meant to grow into a full system dashboard.
+The dashboard also shows network throughput, CPU process rankings, system memory,
+startup-disk capacity and GPU utilization (where the driver exposes it). Resource
+readings need no administrator permission and stop when the panel is hidden.
 
 Verified end-to-end on **M5 Pro (Mac17,8)**. Fan control works on Apple Silicon
 Macs whose firmware exposes writable fan keys (see [How fan control works](#how-fan-control-works)).
 
 ## Features
 
+- 💻 System memory, startup-disk used/total capacity, and GPU utilization
+- 📉 Smooth history charts that preserve sample values and real data gaps
+- 🔋 Default 10 / 3 / 10 s and Eco 30 / 10 / 30 s display sampling; opening a panel uses Default
 - 🌡 Menu-bar readout of the hottest SoC temperature + ring gauges
 - 📈 Interactive **temperature → fan-speed curve** with a live operating point
 - 🌀 **Auto / Manual / Curve** modes; per-machine fan limits handled automatically
@@ -126,8 +130,9 @@ newer build in place. Releases are produced by tagging `vX.Y.Z` (see
 
 ## Roadmap
 
-- [ ] Network throughput module
-- [ ] CPU/GPU/memory utilization
+- [x] Network throughput module
+- [x] CPU process rankings, GPU utilization and system memory
+- [x] Startup-disk capacity
 - [ ] Disk activity & battery health
 - [ ] Per-fan independent curves
 - [ ] Homebrew cask

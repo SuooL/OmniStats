@@ -107,7 +107,7 @@ final class NetProcSampler: ObservableObject {
         let writer = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        child.arguments = ["-n", "-P", "-x", "-l", "0", "-s", "2", "-J", "bytes_in,bytes_out"]
+        child.arguments = ["-n", "-P", "-x", "-l", "0", "-s", "3", "-J", "bytes_in,bytes_out"]
         child.standardOutput = writer; child.standardError = FileHandle.nullDevice
         child.standardInput = FileHandle.nullDevice
         state = .warmingUp

@@ -19,16 +19,24 @@ struct LogicTests {
             SamplingPolicy(config: config, panelVisible: panel, settingsVisible: false,
                 displayAsleep: display, systemAsleep: asleep, lowPower: lowPower)
         }
-        check(policy().sensors == 5 && policy().network == 2 && policy().processes == 10, "Balanced background cadence")
-        check(policy(panel: true).sensors == 2 && policy(panel: true).network == 1 && policy(panel: true).processes == 2, "Visible panel cadence")
-        check(policy(lowPower: true).sensors == 10 && policy(lowPower: true).network == 5, "Low Power Mode")
+        check(policy().sensors == 10 && policy().network == 3 && policy().processes == 10, "Balanced background cadence")
+        check(policy(panel: true).sensors == 10 && policy(panel: true).network == 3 && policy(panel: true).processes == 10, "Visible panel cadence")
+        check(policy(lowPower: true).sensors == 30 && policy(lowPower: true).network == 10 && policy(lowPower: true).processes == 30, "Low Power Mode")
+        config.refreshMode = .economical
+        check(policy().sensors == 30 && policy().network == 10 && policy().processes == 30, "Eco background cadence")
+        check(policy(panel: true, lowPower: true).sensors == 10 && policy(panel: true).network == 3
+              && policy(panel: true).processes == 10, "Visible panels always use default cadence")
+        config.refreshMode = .balanced
         config.showNetworkInMenuBar = false; config.showNetworkPanel = false
         check(policy(panel: true).network == nil, "Hidden network must stop its timer")
         config.cpuWindow = .realtime
-        check(policy().processes == nil && policy(panel: true).processes == 2, "Hidden realtime ranking must stop")
+        check(policy().processes == nil && policy(panel: true).processes == 10, "Hidden realtime ranking must stop")
         config.mode = .curve
-        check(policy(display: true).sensors == 2 && policy(display: true).network == nil, "Screen sleep must preserve active control sampling")
+        check(policy(display: true).sensors == nil && policy(display: true).controlSensors == 2 && policy(display: true).network == nil, "Screen sleep must preserve active control sampling")
         check(policy(asleep: true).sensors == nil, "System sleep must stop sampling")
+        check(policy(asleep: true).controlSensors == nil, "System sleep also stops control sensor reads")
+        config.mode = .manual
+        check(policy().controlSensors == nil && policy().sensors == 10, "Fixed manual speed does not need rapid temperature reads")
         config.manualPct = .infinity; config.rampUpPctPerSec = -10; config.deadbandPct = 999
         let id = UUID()
         config.curve = [.init(id: id, temp: 40, pct: -20), .init(id: id, temp: 40, pct: 10),
@@ -40,6 +48,43 @@ struct LogicTests {
         check(sanitized.curvePct(at: .nan).isNaN, "Invalid temperature must not select the hottest curve point")
         let oldConfig = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data("{}".utf8))
         check(oldConfig.refreshMode == .balanced, "Old configs must acquire the new default")
+
+        for values: [CGFloat] in [[0, 1, 8, 8, 3, 0], [10, 10, 10], [100, 0, 100], [0, 1]] {
+            let points = values.enumerated().map { CGPoint(x: CGFloat($0.offset * $0.offset + $0.offset), y: $0.element) }
+            let curves = SmoothHistory.segments(points)
+            check(curves.count == points.count-1, "Smoothing retains every measured interval")
+            for (i, curve) in curves.enumerated() {
+                check(curve.start == points[i] && curve.end == points[i+1], "Interpolation must pass through the measurements")
+                let low = min(curve.start.y, curve.end.y), high = max(curve.start.y, curve.end.y)
+                for step in 0...100 {
+                    let p = curve.point(at: CGFloat(step)/100)
+                    check(p.y >= low-1e-8 && p.y <= high+1e-8, "Smooth history must not invent extrema")
+                }
+            }
+        }
+        check(SmoothHistory.segments([.zero]).isEmpty, "A single sample cannot form a curve")
+        check(CapacityUsage(used: 20, total: 10) == nil && CapacityUsage(used: 0, total: 0) == nil, "Invalid capacities must be unavailable")
+        check(CapacityUsage(used: 4, total: 8)?.fraction == 0.5, "Capacity fractions")
+        check(ResourceReader.validGPUPercent(0) == 0 && ResourceReader.validGPUPercent(100) == 100
+              && ResourceReader.validGPUPercent(.nan) == nil && ResourceReader.validGPUPercent(101) == nil, "GPU telemetry validation")
+        let liveResources = ResourceReader().sample()
+        check(liveResources.memory != nil && liveResources.disk != nil, "Read-only memory and startup capacity APIs must work")
+        print("Resource API smoke test: memory and disk available; GPU available: \(liveResources.gpuPercent != nil)")
+        let gate = DispatchSemaphore(value: 0), started = DispatchSemaphore(value: 0)
+        var resourceReads = 0
+        let resourceSampler = ResourceSampler(read: {
+            resourceReads += 1
+            if resourceReads == 1 { started.signal(); gate.wait() }
+            return ResourceSnapshot(memory: CapacityUsage(used: 4, total: 8), disk: nil, gpuPercent: 25)
+        })
+        check(resourceSampler.samplingInterval == nil, "Resources must not sample before opening a panel")
+        resourceSampler.setSamplingInterval(10)
+        check(started.wait(timeout: .now()+1) == .success, "Resource sampling runs asynchronously")
+        resourceSampler.setSamplingInterval(nil); resourceSampler.setSamplingInterval(10)
+        gate.signal()
+        wait { resourceSampler.hasSample }
+        check(resourceReads == 2 && resourceSampler.snapshot.gpuPercent == 25, "Quick reopen must discard stale work and prime a fresh resource snapshot")
+        resourceSampler.setSamplingInterval(nil)
 
         var history = CPUHistory()
         history.record(["App": 100], from: 0, to: 2)
@@ -144,8 +189,18 @@ struct LogicTests {
         DispatchQueue.main.async { responsive = true }
         wait({ responsive }, seconds: 0.1)
         wait { monitor.lastSampleTime > snapshot.time }
-        cb_test_sensor_delay(0); monitor.shutdown()
+        cb_test_sensor_delay(0)
+        let publishedTemperature = monitor.socMax, publishedTime = monitor.lastSampleTime
+        var internalSample = snapshot; internalSample.time = sampleTime(); internalSample.socMax = 85
+        monitor.accept(internalSample, publish: false)
+        check(monitor.socMax == publishedTemperature && monitor.lastSampleTime == publishedTime, "Control sampling must not speed up display publication")
+        check(monitor.latestSnapshot?.socMax == 85 && monitor.hasFreshTemperature(at: internalSample.time), "Control must consume the fresh internal temperature")
+        monitor.setSamplingInterval(30, controlInterval: 2)
+        check(monitor.samplingInterval == 30 && monitor.hardwareSamplingInterval == 2, "Eco display and curve safety cadence must remain independent")
+        monitor.setSamplingInterval(nil)
+        check(monitor.latestSnapshot == nil, "Sleep must invalidate internal control temperature")
+        monitor.shutdown()
         check(HelperInstaller.shellQuote("a'b") == "'a'\\''b'", "Shell paths containing quotes")
-        print("PASS: policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence")
     }
 }
