@@ -74,7 +74,7 @@ final class Monitor: ObservableObject {
     @Published var helperAvailable = false
     @Published var busy = false
 
-    // Rolling history for the top-cluster time-series charts (up to 1h @ 2s tick).
+    // Rolling history for the top-cluster charts at the display sampling cadence.
     // Reference buffers — reads happen during body re-renders driven by the
     // @Published sensor values above, so they need no separate publishing.
     let socHistory = MetricSeries(retention: 3600)
@@ -101,23 +101,27 @@ final class Monitor: ObservableObject {
     private var generation = 0
     private var rediscover = true
     private(set) var samplingInterval: TimeInterval?
+    private(set) var hardwareSamplingInterval: TimeInterval?
+    private(set) var latestSnapshot: Snapshot?
+    private var lastHelperPoll: TimeInterval = 0
 
     init(startSampling: Bool = true) {
-        if startSampling { setSamplingInterval(5) }
+        if startSampling { setSamplingInterval(10) }
     }
     deinit { timer?.invalidate() }
 
-    func setSamplingInterval(_ interval: TimeInterval?) {
-        guard interval != samplingInterval else { return }
-        let wasPaused = samplingInterval == nil
-        samplingInterval = interval; generation += 1
+    func setSamplingInterval(_ interval: TimeInterval?, controlInterval: TimeInterval? = nil) {
+        let hardware = [interval, controlInterval].compactMap { $0 }.min()
+        guard interval != samplingInterval || hardware != hardwareSamplingInterval else { return }
+        let wasPaused = hardwareSamplingInterval == nil
+        samplingInterval = interval; hardwareSamplingInterval = hardware; generation += 1
         timer?.invalidate(); timer = nil
-        guard let interval else { lastSampleTime = 0; return }
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.refresh() }
-        timer.tolerance = interval * 0.15
+        guard let hardware else { lastSampleTime = 0; latestSnapshot = nil; return }
+        let timer = Timer(timeInterval: hardware, repeats: true) { [weak self] _ in self?.refresh(forcePublication: false) }
+        timer.tolerance = hardware * 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        if wasPaused { rediscover = true; refresh() }
+        if wasPaused { rediscover = true; refresh(forcePublication: interval != nil) }
     }
 
     struct Snapshot {
@@ -141,7 +145,7 @@ final class Monitor: ObservableObject {
         }
     }
 
-    func refresh() {
+    func refresh(forcePublication: Bool = true) {
         guard !sampleInFlight else { return }
         sampleInFlight = true
         let current = generation, shouldDiscover = rediscover
@@ -153,10 +157,14 @@ final class Monitor: ObservableObject {
                 guard let self else { return }
                 self.sampleInFlight = false
                 guard self.generation == current else { return }
-                self.accept(result)
+                let publish = forcePublication || self.samplingInterval.map {
+                    self.lastSampleTime == 0 || result.time - self.lastSampleTime >= $0 - 0.05
+                } == true
+                self.accept(result, publish: publish)
             }
         }
-        guard !busy else { return }
+        guard !busy, forcePublication || sampleTime() - lastHelperPoll >= (samplingInterval ?? 10) else { return }
+        lastHelperPoll = sampleTime()
         control.poll { [weak self] available, version in
             guard let self else { return }
             if self.helperAvailable != available { self.helperAvailable = available }
@@ -165,7 +173,9 @@ final class Monitor: ObservableObject {
         }
     }
 
-    func accept(_ result: Snapshot) {
+    func accept(_ result: Snapshot, publish: Bool = true) {
+        latestSnapshot = result
+        guard publish else { return }
         socMax = result.socMax; socAvg = result.socAvg
         ssd = result.ssd; battery = result.battery
         power = result.power; volt = result.volt
@@ -180,7 +190,8 @@ final class Monitor: ObservableObject {
     }
 
     func hasFreshTemperature(at now: TimeInterval) -> Bool {
-        socMax.isFinite && lastSampleTime > 0 && now >= lastSampleTime && now - lastSampleTime <= 6
+        guard let sample = latestSnapshot else { return false }
+        return sample.socMax.isFinite && sample.time > 0 && now >= sample.time && now - sample.time <= 6
     }
     func command(_ plan: ControlPlan) {
         guard !busy else { return }
@@ -278,8 +289,11 @@ final class Engine: ObservableObject {
         step()
     }
     private func pctFromRPM(_ fan: Int) -> Double {
-        guard fan < monitor.fanRPM.count, fan < monitor.fanMin.count, fan < monitor.fanMax.count else { return 0 }
-        let rpm = Double(monitor.fanRPM[fan]), minimum = Double(monitor.fanMin[fan]), maximum = Double(monitor.fanMax[fan])
+        let actual = monitor.latestSnapshot?.fanRPM ?? monitor.fanRPM
+        let minima = monitor.latestSnapshot?.fanMin ?? monitor.fanMin
+        let maxima = monitor.latestSnapshot?.fanMax ?? monitor.fanMax
+        guard fan < actual.count, fan < minima.count, fan < maxima.count else { return 0 }
+        let rpm = Double(actual[fan]), minimum = Double(minima[fan]), maximum = Double(maxima[fan])
         guard rpm.isFinite, minimum.isFinite, maximum.isFinite, maximum > minimum else { return 0 }
         return min(100, max(0, (rpm - minimum) / (maximum - minimum) * 100))
     }
@@ -287,7 +301,9 @@ final class Engine: ObservableObject {
     func step(at now: TimeInterval = sampleTime()) {
         let dt = max(0, min(3, now - lastStep)); lastStep = now
         let cfg = store.config.validated()
-        let count = monitor.fanCount
+        let count = monitor.latestSnapshot?.fanRPM.count ?? monitor.fanCount
+        let minima = monitor.latestSnapshot?.fanMin ?? monitor.fanMin
+        let maxima = monitor.latestSnapshot?.fanMax ?? monitor.fanMax
         if suspended || cfg.mode == .auto || count == 0 {
             if monitor.helperAvailable { monitor.revertAll() }
             currentPct = (0..<count).map { pctFromRPM($0) }
@@ -301,15 +317,15 @@ final class Engine: ObservableObject {
             drivingTemp = .nan
             return
         }
-        guard monitor.fanMin.count == count, monitor.fanMax.count == count,
-              (0..<count).allSatisfy({ monitor.fanMin[$0].isFinite && monitor.fanMax[$0].isFinite
-                  && monitor.fanMin[$0] >= 0 && monitor.fanMax[$0] > monitor.fanMin[$0]
-                  && monitor.fanMax[$0] < Float(Int32.max) }) else {
+        guard minima.count == count, maxima.count == count,
+              (0..<count).allSatisfy({ minima[$0].isFinite && maxima[$0].isFinite
+                  && minima[$0] >= 0 && maxima[$0] > minima[$0]
+                  && maxima[$0] < Float(Int32.max) }) else {
             monitor.revertAll(); safetyPaused = true; return
         }
         safetyPaused = false
         if currentPct.count != count { currentPct = (0..<count).map { pctFromRPM($0) } }
-        let raw = Double(monitor.socMax)
+        let raw = Double(monitor.latestSnapshot?.socMax ?? monitor.socMax)
         if raw.isFinite {
             let alpha = 1 - pow(0.75, dt / 1.5)
             smoothedTemp = smoothedTemp.isFinite ? smoothedTemp + alpha * (raw - smoothedTemp) : raw
@@ -323,12 +339,12 @@ final class Engine: ObservableObject {
                 currentPct[fan] = desired > current ? min(desired, current + cfg.rampUpPctPerSec * dt)
                     : max(desired, current - cfg.rampDownPctPerSec * dt)
             }
-            let minimum = Double(monitor.fanMin[fan]), maximum = Double(monitor.fanMax[fan])
+            let minimum = Double(minima[fan]), maximum = Double(maxima[fan])
             rpms.append(Int(minimum + currentPct[fan] / 100 * (maximum - minimum)))
         }
         drivingTemp = smoothedTemp
         if monitor.helperAvailable {
-            let expiry = cfg.mode == .curve ? monitor.lastSampleTime + 6 : now + 3
+            let expiry = cfg.mode == .curve ? (monitor.latestSnapshot?.time ?? 0) + 6 : now + 3
             monitor.command(.manual(rpms: rpms, validUntil: expiry))
         }
     }
