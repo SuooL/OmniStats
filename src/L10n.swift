@@ -53,6 +53,22 @@ enum L {
 
     private struct S { let zhHans, en, zhHant, ja: String }
     private static let table: [String: S] = [
+        "refresh.title": S(zhHans: "采样与能耗", en: "Sampling & energy", zhHant: "取樣與耗能", ja: "サンプリングと省電力"),
+        "refresh.mode": S(zhHans: "后台刷新", en: "Background refresh", zhHant: "背景重新整理", ja: "バックグラウンド更新"),
+        "refresh.responsive": S(zhHans: "快速", en: "Fast", zhHant: "快速", ja: "高速"),
+        "refresh.balanced": S(zhHans: "均衡", en: "Balanced", zhHant: "均衡", ja: "バランス"),
+        "refresh.economical": S(zhHans: "省电", en: "Eco", zhHant: "省電", ja: "省電力"),
+        "refresh.body": S(zhHans: "后台温度 / 网络 / 进程间隔：快速 3 / 1 / 5 秒，均衡 5 / 2 / 10 秒，省电 10 / 5 / 15 秒。打开面板时恢复实时刷新；低电量模式自动省电。手动与曲线控制保持快速采样。", en: "Background temperature / network / process intervals: Fast 3 / 1 / 5s, Balanced 5 / 2 / 10s, Eco 10 / 5 / 15s. Open panels refresh faster; Low Power Mode uses Eco. Manual/curve control retains fast sampling.", zhHant: "背景溫度 / 網路 / 程序間隔：快速 3 / 1 / 5 秒，均衡 5 / 2 / 10 秒，省電 10 / 5 / 15 秒。開啟面板恢復即時更新；低耗電模式自動省電。手動與曲線控制維持快速取樣。", ja: "バックグラウンドの温度 / 通信 / プロセス間隔：高速 3 / 1 / 5秒、バランス 5 / 2 / 10秒、省電力 10 / 5 / 15秒。パネル表示中は高速更新し、低電力モードでは省電力に切り替えます。手動・カーブ制御は高速サンプリングを維持します。"),
+        "control.failed": S(zhHans: "控制指令失败，已停止本次指令并请求系统接管。", en: "Control failed; the command was stopped and automatic control requested.", zhHant: "控制指令失敗，已停止本次指令並請求系統接管。", ja: "制御に失敗しました。コマンドを中止し、自動制御を要求しました。"),
+        "control.installFailed": S(zhHans: "控制服务安装或移除未完成，请重试。", en: "Control service setup did not complete. Please retry.", zhHant: "控制服務安裝或移除未完成，請重試。", ja: "制御サービスの設定が完了しませんでした。再試行してください。"),
+        "control.sensorPaused": S(zhHans: "温度过期或风扇范围无效，曲线控制已暂停并请求系统接管。", en: "Temperature is stale or fan limits are invalid. Control is paused and automatic control requested.", zhHant: "溫度過期或風扇範圍無效，曲線控制已暫停並請求系統接管。", ja: "温度が古いかファン範囲が無効です。制御を一時停止し自動制御を要求しました。"),
+        "control.update": S(zhHans: "更新风扇控制服务", en: "Update fan-control service", zhHant: "更新風扇控制服務", ja: "ファン制御サービスを更新"),
+        "control.updateShort": S(zhHans: "更新服务", en: "Update service", zhHant: "更新服務", ja: "サービスを更新"),
+        "control.updateBody": S(zhHans: "服务仍为旧版。更新后可启用新的看门狗和数据校验保护，需要管理员授权。", en: "The installed service is older. Update it for the new watchdog and validation protections; administrator authorization is required.", zhHant: "服務仍為舊版。更新後可啟用新的看門狗與資料驗證保護，需要管理員授權。", ja: "インストール済みサービスは旧版です。新しい監視・検証保護には更新と管理者認証が必要です。"),
+        "network.warmingUp": S(zhHans: "正在采集进程速率…", en: "Collecting process rates…", zhHant: "正在收集程序速率…", ja: "プロセス通信速度を収集中…"),
+        "network.unavailable": S(zhHans: "进程速率暂不可用，重新展开后重试。", en: "Process rates unavailable. Collapse and expand to retry.", zhHant: "程序速率暫時無法使用，重新展開後重試。", ja: "プロセス通信速度を取得できません。閉じてから再度開いてください。"),
+        "toggle.on": S(zhHans: "已开启", en: "On", zhHant: "已開啟", ja: "オン"),
+        "toggle.off": S(zhHans: "已关闭", en: "Off", zhHant: "已關閉", ja: "オフ"),
         // Language
         "lang.system": S(zhHans: "跟随系统", en: "System", zhHant: "跟隨系統", ja: "システムに従う"),
 

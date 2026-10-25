@@ -1,9 +1,21 @@
-// Runtime UI tests must never connect to the fan-control helper or write SMC.
+// Mock hardware only: these tests never open SMC or the installed helper socket.
 #include "sensors.h"
 #include "control.h"
-
+#include "hardware_stubs.h"
+#include <stdatomic.h>
+#include <unistd.h>
+static atomic_int available, failure, delay, sets, heartbeats, autos;
+static atomic_uint_fast64_t connection = 1;
+void cb_test_reset(void) { available=0; failure=0; delay=0; sets=0; heartbeats=0; autos=0; connection=1; }
+void cb_test_available(int v) { available=v; }
+void cb_test_fail_set(int v) { failure=v; }
+void cb_test_sensor_delay(int v) { delay=v; }
+void cb_test_reconnect(void) { connection++; }
+int cb_test_sets(void) { return sets; }
+int cb_test_heartbeats(void) { return heartbeats; }
+int cb_test_autos(void) { return autos; }
 void cb_sensors_init(void) {}
-void cb_refresh(void) {}
+void cb_refresh(void) { if(delay>0) usleep((useconds_t)delay*1000); }
 float cb_soc_max(void) { return 50; }
 float cb_soc_avg(void) { return 45; }
 float cb_ssd(void) { return 40; }
@@ -15,8 +27,11 @@ float cb_fan_rpm(int i) { return 1500; }
 float cb_fan_min(int i) { return 1200; }
 float cb_fan_max(int i) { return 6000; }
 int cb_fan_mode(int i) { return 0; }
-int cb_ctl_available(void) { return 0; }
-int cb_ctl_set(int fan, int rpm) { return -1; }
-int cb_ctl_auto(int fan) { return -1; }
-int cb_ctl_auto_all(void) { return -1; }
-void cb_ctl_heartbeat(void) {}
+int cb_ctl_available(void) { return available; }
+int cb_ctl_set(int fan, int rpm) { sets++; return available && !failure ? rpm : -1; }
+int cb_ctl_auto(int fan) { autos++; return available ? 0 : -1; }
+int cb_ctl_auto_all(void) { autos++; return available ? 0 : -1; }
+int cb_ctl_heartbeat(void) { heartbeats++; return available && !failure ? 0 : -1; }
+int cb_ctl_version(void) { return 2; }
+void cb_ctl_disconnect(void) { connection++; }
+uint64_t cb_ctl_connection_id(void) { return connection; }

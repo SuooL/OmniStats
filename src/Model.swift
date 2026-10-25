@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 // Apply dark/light chrome (window borders, traffic lights, popover edge) to match
 // the chosen theme. No-op when already correct.
@@ -33,22 +34,24 @@ enum HelperInstaller {
         script.executeAndReturnError(&err)
         return err == nil
     }
+    static func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
     static func install() -> Bool {
         guard let res = Bundle.main.resourcePath else { return false }
         let cmd = [
             "mkdir -p /usr/local/sbin",
-            "cp '\(res)/omnistats-smcd' '\(binDst)'",
+            "cp \(shellQuote(res + "/omnistats-smcd")) \(shellQuote(binDst))",
             "chown root:wheel '\(binDst)'", "chmod 755 '\(binDst)'",
-            "cp '\(res)/com.omnistats.smcd.plist' '\(plistDst)'",
+            "cp \(shellQuote(res + "/com.omnistats.smcd.plist")) \(shellQuote(plistDst))",
             "chown root:wheel '\(plistDst)'", "chmod 644 '\(plistDst)'",
-            "launchctl unload '\(plistDst)' 2>/dev/null || true",
+            "(launchctl unload '\(plistDst)' 2>/dev/null || true)",
             "launchctl load -w '\(plistDst)'",
         ].joined(separator: " && ")
         return runPrivileged(cmd)
     }
     static func uninstall() -> Bool {
         let cmd = [
-            "launchctl unload '\(plistDst)' 2>/dev/null || true",
+            "(launchctl unload '\(plistDst)' 2>/dev/null || true)",
             "rm -f '\(plistDst)' '\(binDst)' /var/run/omnistats.sock",
         ].joined(separator: " && ")
         return runPrivileged(cmd)
@@ -88,124 +91,245 @@ final class Monitor: ObservableObject {
         return n > 0 ? sum / Double(n) : 0
     }
 
+    @Published private(set) var lastSampleTime: TimeInterval = 0
+    @Published private(set) var helperNeedsUpdate = false
+    @Published var controlError: String?
+    private let sensorQueue = DispatchQueue(label: "com.omnistats.sensors", qos: .utility)
+    private let control = ControlChannel()
     private var timer: Timer?
+    private var sampleInFlight = false
+    private var generation = 0
+    private var rediscover = true
+    private(set) var samplingInterval: TimeInterval?
 
-    init() {
-        cb_sensors_init()
-        fanCount = Int(cb_fan_count())
-        refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in self?.refresh() }
-        timer?.tolerance = 0.2
+    init(startSampling: Bool = true) {
+        if startSampling { setSamplingInterval(5) }
     }
     deinit { timer?.invalidate() }
-    func refresh() {
-        cb_refresh()
-        socMax = cb_soc_max(); socAvg = cb_soc_avg()
-        ssd = cb_ssd(); battery = cb_battery()
-        power = cb_power(); volt = cb_volt()
-        fanRPM  = (0..<fanCount).map { cb_fan_rpm(Int32($0)) }
-        fanMin  = (0..<fanCount).map { cb_fan_min(Int32($0)) }
-        fanMax  = (0..<fanCount).map { cb_fan_max(Int32($0)) }
-        fanMode = (0..<fanCount).map { Int(cb_fan_mode(Int32($0))) }
-        helperAvailable = (cb_ctl_available() == 1)
 
-        let now = CFAbsoluteTimeGetCurrent()
-        if !socMax.isNaN { socHistory.record(Double(socMax), at: now) }
-        if !ssd.isNaN    { ssdHistory.record(Double(ssd), at: now) }
-        if fanCount > 0  { fanHistory.record(fanAvgPct, at: now) }
+    func setSamplingInterval(_ interval: TimeInterval?) {
+        guard interval != samplingInterval else { return }
+        let wasPaused = samplingInterval == nil
+        samplingInterval = interval; generation += 1
+        timer?.invalidate(); timer = nil
+        guard let interval else { lastSampleTime = 0; return }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.refresh() }
+        timer.tolerance = interval * 0.15
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        if wasPaused { rediscover = true; refresh() }
     }
-    func revertAll() { _ = cb_ctl_auto_all() }
+
+    struct Snapshot {
+        var time = sampleTime()
+        var socMax: Float = .nan, socAvg: Float = .nan, ssd: Float = .nan, battery: Float = .nan
+        var power: Float = .nan, volt: Float = .nan
+        var fanRPM: [Float] = [], fanMin: [Float] = [], fanMax: [Float] = []
+        var fanMode: [Int] = []
+        static func read() -> Snapshot {
+            var result = Snapshot()
+            cb_refresh()
+            result.socMax = cb_soc_max(); result.socAvg = cb_soc_avg()
+            result.ssd = cb_ssd(); result.battery = cb_battery()
+            result.power = cb_power(); result.volt = cb_volt()
+            let count = min(8, max(0, Int(cb_fan_count())))
+            result.fanRPM = (0..<count).map { cb_fan_rpm(Int32($0)) }
+            result.fanMin = (0..<count).map { cb_fan_min(Int32($0)) }
+            result.fanMax = (0..<count).map { cb_fan_max(Int32($0)) }
+            result.fanMode = (0..<count).map { Int(cb_fan_mode(Int32($0))) }
+            return result
+        }
+    }
+
+    func refresh() {
+        guard !sampleInFlight else { return }
+        sampleInFlight = true
+        let current = generation, shouldDiscover = rediscover
+        rediscover = false
+        sensorQueue.async { [weak self] in
+            if shouldDiscover { cb_sensors_init() }
+            let result = Snapshot.read()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.sampleInFlight = false
+                guard self.generation == current else { return }
+                self.accept(result)
+            }
+        }
+        guard !busy else { return }
+        control.poll { [weak self] available, version in
+            guard let self else { return }
+            if self.helperAvailable != available { self.helperAvailable = available }
+            let needsUpdate = available && version < 2
+            if self.helperNeedsUpdate != needsUpdate { self.helperNeedsUpdate = needsUpdate }
+        }
+    }
+
+    func accept(_ result: Snapshot) {
+        socMax = result.socMax; socAvg = result.socAvg
+        ssd = result.ssd; battery = result.battery
+        power = result.power; volt = result.volt
+        fanRPM = result.fanRPM; fanMin = result.fanMin
+        fanMax = result.fanMax; fanMode = result.fanMode
+        if fanCount != fanRPM.count { fanCount = fanRPM.count }
+        let cadence = samplingInterval ?? 2
+        if socMax.isFinite { socHistory.record(Double(socMax), at: result.time, cadence: cadence) }
+        if ssd.isFinite { ssdHistory.record(Double(ssd), at: result.time, cadence: cadence) }
+        if fanCount > 0 { fanHistory.record(fanAvgPct, at: result.time, cadence: cadence) }
+        lastSampleTime = result.time
+    }
+
+    func hasFreshTemperature(at now: TimeInterval) -> Bool {
+        socMax.isFinite && lastSampleTime > 0 && now >= lastSampleTime && now - lastSampleTime <= 6
+    }
+    func command(_ plan: ControlPlan) {
+        guard !busy else { return }
+        control.submit(plan) { [weak self] success in
+            guard let self else { return }
+            if !success && self.helperAvailable { self.controlError = L.t("control.failed") }
+            else if success { self.controlError = nil }
+        }
+    }
+    func revertAll() { command(.automatic) }
+    func shutdown() { timer?.invalidate(); control.shutdown() }
 
     func enableControl(_ done: (() -> Void)? = nil) {
-        busy = true
-        DispatchQueue.global().async {
-            let ok = HelperInstaller.install()
-            DispatchQueue.main.asyncAfter(deadline: .now() + (ok ? 1.0 : 0)) {
-                self.busy = false; self.refresh(); done?()
+        guard !busy else { return }
+        busy = true; controlError = nil
+        control.disconnect { [weak self] in
+            DispatchQueue.global().async {
+                let ok = HelperInstaller.install()
+                DispatchQueue.main.asyncAfter(deadline: .now() + (ok ? 1 : 0)) {
+                    guard let self else { return }
+                    self.busy = false
+                    if !ok { self.controlError = L.t("control.installFailed") }
+                    self.refresh(); done?()
+                }
             }
         }
     }
     func disableControl() {
-        revertAll(); busy = true
-        DispatchQueue.global().async {
-            _ = HelperInstaller.uninstall()
-            DispatchQueue.main.async { self.busy = false; self.refresh() }
+        guard !busy else { return }
+        busy = true; controlError = nil
+        control.disconnect { [weak self] in
+            DispatchQueue.global().async {
+                let ok = HelperInstaller.uninstall()
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.busy = false
+                    if !ok { self.controlError = L.t("control.installFailed") }
+                    self.refresh()
+                }
+            }
         }
     }
 }
 
-// MARK: - Hardware-friendly control engine
-// Drives every fan toward a target derived from the current mode, moving the
-// commanded speed by a bounded step each tick (slew-rate limiting) with a
-// hysteresis deadband — no abrupt RPM jumps.
+// An independent 1.5s control loop runs only in manual/curve modes. Display
+// energy settings never slow it down. Stale curve input hands control back to
+// firmware; resuming requires a fresh sample and restarts smoothing/slew state.
 final class Engine: ObservableObject {
     let monitor: Monitor
     let store: ConfigStore
+    @Published private(set) var drivingTemp = Double.nan
+    @Published private(set) var safetyPaused = false
     private var timer: Timer?
-    private var currentPct: [Double] = []      // slewed command per fan (percent)
-    private var lastMode: FanMode = .auto
-    private let tick = 1.5
-
-    // Temperature smoothing (EMA) so brief spikes don't make fans surge.
-    private var smoothedTemp: Double = .nan
-    private let tempAlpha = 0.25               // ~6s time constant at 1.5s tick
-    var drivingTemp: Double = .nan             // smoothed temp actually driving the curve
+    private var currentPct: [Double] = []
+    private var smoothedTemp = Double.nan
+    private var lastStep = sampleTime()
+    private var suspended = false
+    private var bag = Set<AnyCancellable>()
+    private(set) var isRunning = false
+    var commandedPct: Double { currentPct.first ?? 0 }
 
     init(monitor: Monitor, store: ConfigStore) {
-        self.monitor = monitor
-        self.store = store
-        timer = Timer.scheduledTimer(withTimeInterval: tick, repeats: true) { [weak self] _ in self?.step() }
+        self.monitor = monitor; self.store = store
+        Publishers.Merge(store.$config.map(\.mode).removeDuplicates().map { _ in () },
+                         monitor.$fanCount.removeDuplicates().map { _ in () })
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.configure() }.store(in: &bag)
+        monitor.$lastSampleTime.receive(on: RunLoop.main).sink { [weak self] _ in
+            guard let self, self.store.config.mode == .auto else { return }
+            self.step()
+        }.store(in: &bag)
+        monitor.$helperAvailable.receive(on: RunLoop.main).sink { [weak self] available in
+            if available { self?.step() }
+        }.store(in: &bag)
+        configure()
     }
     deinit { timer?.invalidate() }
 
-    private func pctToRpm(_ fan: Int, _ pct: Double) -> Int {
-        let mn = fan < monitor.fanMin.count && !monitor.fanMin[fan].isNaN ? Double(monitor.fanMin[fan]) : 1200
-        let mx = fan < monitor.fanMax.count && !monitor.fanMax[fan].isNaN ? Double(monitor.fanMax[fan]) : 6000
-        return Int(mn + max(0, min(100, pct)) / 100 * (mx - mn))
+    func setSuspended(_ value: Bool) {
+        guard suspended != value else { return }
+        suspended = value
+        smoothedTemp = .nan; currentPct = []; lastStep = sampleTime()
+        configure()
     }
-    private func rpmToPct(_ fan: Int, _ rpm: Float) -> Double {
-        guard fan < monitor.fanMin.count, fan < monitor.fanMax.count,
-              !rpm.isNaN, !monitor.fanMin[fan].isNaN, !monitor.fanMax[fan].isNaN else { return 0 }
-        let mn = Double(monitor.fanMin[fan]), mx = Double(monitor.fanMax[fan])
-        guard mx > mn else { return 0 }
-        return max(0, min(100, (Double(rpm) - mn) / (mx - mn) * 100))
-    }
-
-    // The commanded percent applied to fan 0 (for the live "operating point").
-    var commandedPct: Double { currentPct.first ?? 0 }
-
-    private func step() {
-        let n = monitor.fanCount
-        guard n > 0 else { return }
-        if currentPct.count != n {
-            currentPct = (0..<n).map { rpmToPct($0, $0 < monitor.fanRPM.count ? monitor.fanRPM[$0] : .nan) }
-        }
-        // EMA-smooth the driving temperature every tick.
-        let raw = Double(monitor.socMax)
-        if !raw.isNaN { smoothedTemp = smoothedTemp.isNaN ? raw : smoothedTemp + tempAlpha * (raw - smoothedTemp) }
-        drivingTemp = smoothedTemp
-
-        let cfg = store.config
-        switch cfg.mode {
-        case .auto:
-            if lastMode != .auto { for i in 0..<n { _ = cb_ctl_auto(Int32(i)) } }
-            for i in 0..<n { currentPct[i] = rpmToPct(i, i < monitor.fanRPM.count ? monitor.fanRPM[i] : .nan) }
-        case .manual, .curve:
-            // Compute the slewed command even without the helper (live preview);
-            // only actually push it to hardware when control is available.
-            let temp = smoothedTemp.isNaN ? Double(monitor.socMax) : smoothedTemp
-            for i in 0..<n {
-                let desired = cfg.mode == .manual ? cfg.manualPct : cfg.curvePct(at: temp)
-                let cur = currentPct[i]
-                var next = cur
-                if abs(desired - cur) > cfg.deadbandPct {
-                    let up = cfg.rampUpPctPerSec * tick, down = cfg.rampDownPctPerSec * tick
-                    next = desired > cur ? min(desired, cur + up) : max(desired, cur - down)
-                }
-                currentPct[i] = next
-                if monitor.helperAvailable { _ = cb_ctl_set(Int32(i), Int32(pctToRpm(i, next))) }
+    private func configure() {
+        let shouldRun = !suspended && store.config.mode != .auto && monitor.fanCount > 0
+        if shouldRun != isRunning {
+            timer?.invalidate(); timer = nil
+            isRunning = shouldRun; lastStep = sampleTime()
+            if shouldRun {
+                let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in self?.step() }
+                RunLoop.main.add(t, forMode: .common); timer = t
             }
         }
-        lastMode = cfg.mode
+        step()
+    }
+    private func pctFromRPM(_ fan: Int) -> Double {
+        guard fan < monitor.fanRPM.count, fan < monitor.fanMin.count, fan < monitor.fanMax.count else { return 0 }
+        let rpm = Double(monitor.fanRPM[fan]), minimum = Double(monitor.fanMin[fan]), maximum = Double(monitor.fanMax[fan])
+        guard rpm.isFinite, minimum.isFinite, maximum.isFinite, maximum > minimum else { return 0 }
+        return min(100, max(0, (rpm - minimum) / (maximum - minimum) * 100))
+    }
+
+    func step(at now: TimeInterval = sampleTime()) {
+        let dt = max(0, min(3, now - lastStep)); lastStep = now
+        let cfg = store.config.validated()
+        let count = monitor.fanCount
+        if suspended || cfg.mode == .auto || count == 0 {
+            if monitor.helperAvailable { monitor.revertAll() }
+            currentPct = (0..<count).map { pctFromRPM($0) }
+            drivingTemp = Double(monitor.socMax)
+            safetyPaused = false; smoothedTemp = .nan
+            return
+        }
+        guard cfg.mode != .curve || monitor.hasFreshTemperature(at: now) else {
+            monitor.revertAll()
+            safetyPaused = true; smoothedTemp = .nan; currentPct = []
+            drivingTemp = .nan
+            return
+        }
+        guard monitor.fanMin.count == count, monitor.fanMax.count == count,
+              (0..<count).allSatisfy({ monitor.fanMin[$0].isFinite && monitor.fanMax[$0].isFinite
+                  && monitor.fanMin[$0] >= 0 && monitor.fanMax[$0] > monitor.fanMin[$0]
+                  && monitor.fanMax[$0] < Float(Int32.max) }) else {
+            monitor.revertAll(); safetyPaused = true; return
+        }
+        safetyPaused = false
+        if currentPct.count != count { currentPct = (0..<count).map { pctFromRPM($0) } }
+        let raw = Double(monitor.socMax)
+        if raw.isFinite {
+            let alpha = 1 - pow(0.75, dt / 1.5)
+            smoothedTemp = smoothedTemp.isFinite ? smoothedTemp + alpha * (raw - smoothedTemp) : raw
+        }
+        let desired = cfg.mode == .manual ? cfg.manualPct : cfg.curvePct(at: smoothedTemp)
+        guard desired.isFinite else { monitor.revertAll(); safetyPaused = true; return }
+        var rpms: [Int] = []
+        for fan in 0..<count {
+            let current = currentPct[fan]
+            if abs(desired - current) > cfg.deadbandPct {
+                currentPct[fan] = desired > current ? min(desired, current + cfg.rampUpPctPerSec * dt)
+                    : max(desired, current - cfg.rampDownPctPerSec * dt)
+            }
+            let minimum = Double(monitor.fanMin[fan]), maximum = Double(monitor.fanMax[fan])
+            rpms.append(Int(minimum + currentPct[fan] / 100 * (maximum - minimum)))
+        }
+        drivingTemp = smoothedTemp
+        if monitor.helperAvailable {
+            let expiry = cfg.mode == .curve ? monitor.lastSampleTime + 6 : now + 3
+            monitor.command(.manual(rpms: rpms, validUntil: expiry))
+        }
     }
 }

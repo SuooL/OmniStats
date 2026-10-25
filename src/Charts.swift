@@ -18,14 +18,13 @@ enum ChartScale { case linear, log }
 // A sampler that stops (display sleep, app suspension) would otherwise have its
 // resume point joined straight back to the last pre-gap sample, drawing a slope
 // that never happened.
-private let maxGapSeconds: Double = 8
 
 // Split samples into runs of contiguous readings, dropping anything older than x0.
-private func segments(_ samples: [TimedSample], from x0: CFAbsoluteTime) -> [[TimedSample]] {
+func segments(_ samples: [TimedSample], from x0: CFAbsoluteTime) -> [[TimedSample]] {
     var out: [[TimedSample]] = []
     var run: [TimedSample] = []
     for p in samples where p.t >= x0 {
-        if let last = run.last, p.t - last.t > maxGapSeconds {
+        if let last = run.last, p.t - last.t > max(8, max(last.cadence, p.cadence) * 2.5) {
             if !run.isEmpty { out.append(run) }
             run = []
         }

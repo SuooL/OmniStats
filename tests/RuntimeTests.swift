@@ -31,18 +31,23 @@ enum RuntimeTests {
         app.setActivationPolicy(.accessory)
         app.finishLaunching()
 
-        let suite = "OmniStats.RuntimeTests.(UUID().uuidString)"
+        let suite = "OmniStats.RuntimeTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = ConfigStore(defaults: defaults)
+        defer { store.flush() }
         store.config.showProcesses = false
         let mon = Monitor()
         let net = NetSampler()
         let proc = ProcSampler()
         let netProc = NetProcSampler()
         let engine = Engine(monitor: mon, store: store)
+        let activity = ActivityState()
+        let coordinator = SamplingCoordinator(monitor: mon, net: net, proc: proc, netProc: netProc,
+                                             engine: engine, store: store, activity: activity)
+        defer { withExtendedLifetime(coordinator) {} }
         let status = StatusItemController(mon: mon, store: store, engine: engine,
-            net: net, proc: proc, netProc: netProc, onOpenSettings: {})
+            net: net, proc: proc, netProc: netProc, activity: activity, onOpenSettings: {})
         check(status.panel == nil, "Startup must not construct the hidden panel")
         check(!proc.enabled, "Process sampling preferences must apply before opening a panel")
         drain()
@@ -51,6 +56,13 @@ enum RuntimeTests {
             fatalError("Runtime tests require a logged-in macOS desktop session")
         }
         check(button.image != nil, "Menu-bar image must render")
+        check(button.toolTip?.contains("content.") == false, "Tooltip must interpolate live values")
+        let backgroundCadence: Double = ProcessInfo.processInfo.isLowPowerModeEnabled ? 10 : 5
+        check(mon.samplingInterval == backgroundCadence, "Coordinator must apply background cadence")
+        activity.panelVisible = true; drain()
+        check(mon.samplingInterval == 2 && net.samplingInterval == 1, "Visible panel must accelerate sampling")
+        activity.panelVisible = false; drain()
+        check(mon.samplingInterval == backgroundCadence, "Hidden panel must restore background cadence")
         var imageWrites = 0
         let observation = button.observe(\.image, options: [.new]) { _, _ in imageWrites += 1 }
         defer { observation.invalidate() }
@@ -99,7 +111,7 @@ enum RuntimeTests {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
         let settings = SettingsWindowController(mon: mon, store: store, engine: engine,
-            updater: Updater(updater: updaterController.updater))
+            updater: Updater(updater: updaterController.updater), activity: activity)
         var previousSettingsFrame: NSRect?
 
         // Warm up framework caches before measuring repeated window lifetimes.
@@ -140,6 +152,27 @@ enum RuntimeTests {
             check(settingsHost == nil, "Closed settings hosting controller is retained")
         }
 
+        // Exercise real read-only nettop subprocesses, including callbacks from old sessions.
+        var retired: [pid_t] = []
+        for _ in 0..<4 {
+            netProc.enabled = true
+            guard let pid = netProc.processIdentifier else { fatalError("nettop must launch") }
+            retired.append(pid)
+            netProc.enabled = false
+        }
+        netProc.enabled = true
+        let activePID = netProc.processIdentifier
+        let deadline = Date().addingTimeInterval(12)
+        while netProc.state == .warmingUp && Date() < deadline { drain(0.05) }
+        check(netProc.state == .running && netProc.processIdentifier == activePID,
+              "Live nettop must parse data; retired callbacks must not stop its replacement")
+        check(retired.allSatisfy { kill($0, 0) == -1 && errno == ESRCH }, "Retired nettop children must terminate")
+        netProc.suspended = true
+        drain(0.1)
+        check(netProc.state == .stopped && netProc.processIdentifier == nil, "Sleep must stop nettop")
+        netProc.enabled = false
+        netProc.suspended = false
+
         // Report a short idle sample, not a long-run leak or energy guarantee.
         drain(0.2)
         let before = resources()
@@ -149,6 +182,6 @@ enum RuntimeTests {
         let after = resources()
         print(String(format: "Idle test process: %.2f%% CPU, %.1f MiB footprint (3-second sample)",
                      (after.cpu - before.cpu) / elapsed * 100, after.memory))
-        print("PASS: batched renders, unchanged/hidden label caching, presentation updates, stable row identity, panel resizing, and 12 window release/reopen cycles")
+        print("PASS: batched renders, unchanged/hidden label caching, presentation updates, stable row identity, panel resizing, 12 window release/reopen cycles, adaptive visibility, and live nettop cleanup")
     }
 }

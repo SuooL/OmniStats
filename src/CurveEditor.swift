@@ -39,6 +39,7 @@ struct CurveEditor: View {
                     operatingPoint(w, h)
                     ForEach(points) { p in dot(p, w, h) }
                 }
+                .coordinateSpace(name: "fanCurve")
                 .contentShape(Rectangle())
             }
             .frame(height: height)
@@ -106,7 +107,7 @@ struct CurveEditor: View {
             .overlay(Circle().stroke(isSel ? Theme.accent : Theme.ink2, lineWidth: isSel ? 2.5 : 1.5))
             .frame(width: 15, height: 15)
             .position(x: px(p.temp, w), y: py(p.pct, h))
-            .gesture(DragGesture(minimumDistance: 0)
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("fanCurve"))
                 .onChanged { g in
                     selected = p.id
                     guard let idx = points.firstIndex(where: { $0.id == p.id }) else { return }
@@ -116,7 +117,9 @@ struct CurveEditor: View {
                     let higher = points.filter { $0.id != p.id && $0.temp > points[idx].temp }.map { $0.temp }.min()
                     if let l = lower { t = max(t, l + 1) }
                     if let hi = higher { t = min(t, hi - 1) }
-                    points[idx].temp = t; points[idx].pct = pc
+                    var updated = points
+                    updated[idx].temp = t; updated[idx].pct = pc
+                    points = updated
                 })
     }
 
@@ -131,10 +134,12 @@ struct CurveEditor: View {
         .buttonStyle(.bordered).controlSize(.small).font(.system(size: 11)).tint(Theme.accent)
     }
     private func addPoint() {
+        guard points.count < 32 else { return }
         let pts = sorted; var gap = 0.0, at = 62.0
         for i in 0..<max(0, pts.count-1) where pts[i+1].temp - pts[i].temp > gap {
             gap = pts[i+1].temp - pts[i].temp; at = (pts[i].temp + pts[i+1].temp)/2
         }
+        guard gap >= 2 else { return }
         var cfg = OmniStatsConfig(); cfg.curve = points
         let np = CurvePoint(temp: at, pct: cfg.curvePct(at: at))
         points.append(np); selected = np.id
