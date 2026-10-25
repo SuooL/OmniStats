@@ -47,11 +47,18 @@ needed.
 make            # build dist/OmniStats.app + helper
 make run        # build and launch
 make test       # CLI smoke test of the sensor/control layer
+make test-runtime # AppKit regressions with simulated sensors (logged-in macOS desktop)
 make clean
 ```
 
 CI (`.github/workflows/ci.yml`) builds every push/PR to `main`/`dev` on an
 Apple Silicon runner.
+
+`make test-runtime` uses isolated preferences and hardware stubs, so it never
+connects to the installed fan-control helper. It checks batched/unchanged menu-bar
+rendering, stable process identities, panel resizing, and release/reopening of
+window hosting trees. It also prints a short idle CPU/footprint sample; this is
+not a substitute for profiling the real app or a long-running leak test.
 
 ## Project layout
 

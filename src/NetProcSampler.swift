@@ -1,7 +1,7 @@
 import Foundation
 
 struct NetProcUsage: Identifiable {
-    let id = UUID()
+    var id: String { name }
     let name: String
     let rxBps: Double     // download, bytes/sec
     let txBps: Double     // upload,   bytes/sec

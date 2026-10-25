@@ -19,9 +19,8 @@ import Combine
 // window height frame-by-frame instead of snapping.
 
 // MARK: - Shared panel state
-// `netExpanded` lives here rather than in a `@State` inside MenuPanel: the
-// hosting view is reused across open/close, so SwiftUI state would keep the
-// network section expanded the next time the panel is summoned.
+// The controller owns expansion so it can stop the network subprocess on
+// dismissal without waiting for a SwiftUI render or disappearance callback.
 final class PanelState: ObservableObject {
     @Published var netExpanded = false
 }
@@ -64,13 +63,18 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let netProc: NetProcSampler
     private let onOpenSettings: @MainActor () -> Void
 
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelState = PanelState()
-    private var panel: PanelWindow!
-    private var hosting: SizingHostingView<MenuPanel>!
+    private(set) var panel: PanelWindow?
+    private var hosting: SizingHostingView<MenuPanel>?
+    private var labelRefreshPending = false
+    private var lastLabelContent: MenuBarContent?
+    private var lastLabelScale: CGFloat = 0
+    private var lastLabelAppearance: AppearanceMode?
 
     private var pinnedTop: CGFloat = 0        // screen y of the panel's top edge, held across resizes
     private var resizing = false              // re-entrancy guard for layout → setFrame → layout
+    private var closingPanel = false
     private var lastClose = Date.distantPast
     private var globalMonitor: Any?
     private var localMonitor: Any?
@@ -83,29 +87,56 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         self.onOpenSettings = onOpenSettings
         super.init()
 
-        buildPanel()
-
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePanel)
             button.imagePosition = .imageOnly
         }
 
-        // Re-render the menu-bar image whenever a source of its content changes.
-        // `objectWillChange` fires *before* the mutation, so hop to the next
-        // run-loop pass to read the settled values.
+        // A sensor refresh publishes several fields synchronously. Queue only
+        // one render for the entire batch, after all values have settled.
         Publishers.MergeMany(
             net.objectWillChange.eraseToAnyPublisher(),
-            mon.objectWillChange.eraseToAnyPublisher(),
-            store.objectWillChange.eraseToAnyPublisher()
+            mon.objectWillChange.eraseToAnyPublisher()
         )
-        .receive(on: RunLoop.main)
-        // `.receive(on: RunLoop.main)` already guarantees the main thread; assert
-        // that to the compiler so the isolated redraw can run synchronously.
-        .sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshLabel() } }
+        .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleLabelRefresh() } }
         .store(in: &bag)
 
+        store.objectWillChange
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in MainActor.assumeIsolated {
+            self?.configureSamplers()
+            self?.scheduleLabelRefresh()
+        } }
+        .store(in: &bag)
+
+        panelState.$netExpanded
+        .sink { [weak self] expanded in MainActor.assumeIsolated {
+            guard let self else { return }
+            self.netProc.enabled = self.panel?.isVisible == true
+                && self.store.config.showNetworkPanel && expanded
+        } }
+        .store(in: &bag)
+
+        configureSamplers()
         refreshLabel()
+    }
+
+    private func configureSamplers() {
+        proc.enabled = store.config.showProcesses
+        proc.windowSeconds = store.config.cpuWindow.seconds
+        netProc.enabled = panel?.isVisible == true
+            && store.config.showNetworkPanel && panelState.netExpanded
+    }
+
+    private func scheduleLabelRefresh() {
+        guard !labelRefreshPending else { return }
+        labelRefreshPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.labelRefreshPending = false
+            self.refreshLabel()
+        }
     }
 
     // MARK: menu-bar label
@@ -114,7 +145,6 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // size with no clipping. This is how pro menu-bar apps stack upload/download
     // on two rows.
     private func refreshLabel() {
-        syncPresentation(store.config)
         let cfg = store.config
         let mono = cfg.menuNumberColor == .mono
         func tint(_ rate: Double) -> Color {
@@ -134,16 +164,25 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let content = MenuBarContent(
             showNet: cfg.showNetworkInMenuBar,
             showTemp: cfg.showTempInMenuBar,
-            txText: menuBarRate(net.txBps),
-            rxText: menuBarRate(net.rxBps),
-            tempText: mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax),
-            txColor: tint(net.txBps), rxColor: tint(net.rxBps), tempColor: tempTint)
+            txText: cfg.showNetworkInMenuBar ? menuBarRate(net.txBps) : "",
+            rxText: cfg.showNetworkInMenuBar ? menuBarRate(net.rxBps) : "",
+            tempText: cfg.showTempInMenuBar ? (mon.socMax.isNaN ? "—" : String(format: "%.0f°", mon.socMax)) : "",
+            txColor: cfg.showNetworkInMenuBar ? tint(net.txBps) : .clear,
+            rxColor: cfg.showNetworkInMenuBar ? tint(net.rxBps) : .clear,
+            tempColor: cfg.showTempInMenuBar ? tempTint : (mono ? .primary : Theme.accent))
 
-        let renderer = ImageRenderer(content: content)
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        let scale = statusItem.button?.window?.screen?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor ?? 2
+        guard content != lastLabelContent || scale != lastLabelScale
+                || cfg.appearance != lastLabelAppearance else { return }
+        let renderer = ImageRenderer(content: content.environment(\.colorScheme, cfg.appearance.colorScheme))
+        renderer.scale = scale
         guard let img = renderer.nsImage else { return }
         img.isTemplate = mono   // mono → adaptive template (legible on any menu-bar tint)
         statusItem.button?.image = img
+        lastLabelContent = content
+        lastLabelScale = scale
+        lastLabelAppearance = cfg.appearance
     }
 
     // MARK: panel lifecycle
@@ -168,6 +207,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         p.isFloatingPanel = true
         p.hidesOnDeactivate = false
         p.isMovable = false
+        p.isReleasedWhenClosed = false
         p.animationBehavior = .none          // we own the geometry; no AppKit fade/zoom
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         p.delegate = self
@@ -179,7 +219,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // Called from the hosting view's layout pass. Resizes the window to the
     // content's ideal size, keeping the top edge pinned under the menu bar.
     private func applyContentSize(_ size: CGSize) {
-        guard !resizing, panel != nil, panel.isVisible,
+        guard !resizing, let panel, panel.isVisible,
+              size.width.isFinite, size.height.isFinite,
               size.width > 1, size.height > 1 else { return }
         var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         guard abs(frame.height - panel.frame.height) > 0.5
@@ -193,7 +234,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     }
 
     @objc private func togglePanel() {
-        if panel.isVisible {
+        if panel?.isVisible == true {
             closePanel()
         } else {
             // A click on the status item first makes the panel resign key, which
@@ -204,8 +245,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func openPanel() {
+    func openPanel() {
+        guard panel?.isVisible != true else { return }
         guard let button = statusItem.button, let buttonWindow = button.window else { return }
+        if panel == nil { buildPanel() }
+        guard let panel, let hosting else { return }
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.intrinsicContentSize
         let frameSize = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
@@ -225,13 +269,22 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         installMonitors()
     }
 
-    private func closePanel() {
-        guard panel != nil, panel.isVisible else { return }
+    func closePanel() {
+        guard !closingPanel, let panel, panel.isVisible else { return }
+        closingPanel = true
+        defer { closingPanel = false }
         removeMonitors()
         panel.orderOut(nil)
         statusItem.button?.highlight(false)
         panelState.netExpanded = false
         netProc.enabled = false          // stop the nettop child as soon as it's off screen
+        // orderOut alone retains the hosting tree and its live subscriptions.
+        // Destroy it so hidden charts cannot keep SwiftUI laying out.
+        hosting?.onSizeChange = nil
+        panel.contentView = nil
+        panel.close()
+        hosting = nil
+        self.panel = nil
         lastClose = Date()
     }
 
@@ -257,14 +310,16 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 // MARK: - Settings window
 // A plain AppKit window hosting `SettingsView`. The app has no SwiftUI `Scene`
 // graph any more, so `@Environment(\.openWindow)` is unavailable — and this is
-// simpler anyway: one window, created lazily, reused thereafter.
+// simpler anyway: one window, created lazily and released when closed.
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let mon: Monitor
     private let store: ConfigStore
     private let engine: Engine
     private let updater: Updater
-    private var window: NSWindow?
+    private let settingsState = SettingsState()
+    private var savedFrame: NSRect?
+    private(set) var window: NSWindow?
 
     init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater) {
         self.mon = mon; self.store = store; self.engine = engine; self.updater = updater
@@ -273,7 +328,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show() {
         if window == nil {
             let host = NSHostingController(
-                rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater))
+                rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater, state: settingsState))
             let w = NSWindow(contentViewController: host)
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.title = L.t("settings.window")
@@ -281,11 +336,20 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false      // we keep the reference; AppKit must not free it
             w.delegate = self
-            w.center()
+            if let savedFrame { w.setFrame(savedFrame, display: false) } else { w.center() }
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow, closing === window else { return }
+        savedFrame = closing.frame
+        // A closed NSWindow otherwise retains its NSHostingController, which
+        // continues observing the monitor for the rest of the app's lifetime.
+        closing.contentViewController = nil
+        window = nil
     }
 }
 
@@ -293,7 +357,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 // The rasterised menu-bar content: stacked upload/download on the left,
 // temperature on the right. Rendered off-screen by ImageRenderer, so colors are
 // passed in explicitly rather than read from the environment.
-struct MenuBarContent: View {
+struct MenuBarContent: View, Equatable {
     let showNet: Bool
     let showTemp: Bool
     let txText: String

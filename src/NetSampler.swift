@@ -36,6 +36,7 @@ final class NetSampler: ObservableObject {
     init() {
         prev = readCounters()            // prime so the first tick has a baseline
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.tick() }
+        t.tolerance = 0.1
         RunLoop.main.add(t, forMode: .common)   // keep ticking while the panel is open
         timer = t
     }

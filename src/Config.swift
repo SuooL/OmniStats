@@ -179,20 +179,28 @@ extension OmniStatsConfig {
 
 // MARK: - Config store (ObservableObject, auto-persists)
 final class ConfigStore: ObservableObject {
-    @Published var config: OmniStatsConfig { didSet { save() } }
+    @Published var config: OmniStatsConfig {
+        didSet {
+            syncPresentation(config)
+            save()
+        }
+    }
     private let key = "OmniStatsConfig.v1"
+    private let defaults: UserDefaults
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: key),
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: key),
            let c = try? JSONDecoder().decode(OmniStatsConfig.self, from: data) {
             config = c
         } else {
             config = OmniStatsConfig()
         }
+        syncPresentation(config)
     }
     private func save() {
         if let data = try? JSONEncoder().encode(config) {
-            UserDefaults.standard.set(data, forKey: key)
+            defaults.set(data, forKey: key)
         }
     }
 }

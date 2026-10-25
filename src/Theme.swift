@@ -44,11 +44,10 @@ enum MenuNumberColorMode: String, Codable, CaseIterable, Identifiable {
 }
 
 // Design tokens — a "thermal instrument" palette with dark & light variants.
-// `Theme.mode` is set at the top of each root view's body so every token read
-// during that render reflects the current theme.
+// ConfigStore updates these tokens when presentation preferences change.
 enum Theme {
     static var mode: AppearanceMode = .dark
-    static var accentPreset: AccentPreset = .teal   // set alongside `mode` at each root body
+    static var accentPreset: AccentPreset = .teal
 
     private static func pick(_ dark: UInt32, _ light: UInt32) -> Color {
         Color(hex: mode == .dark ? dark : light)

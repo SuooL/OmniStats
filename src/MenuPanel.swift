@@ -51,11 +51,7 @@ struct MenuPanel: View {
     }
 
     var body: some View {
-        syncPresentation(store.config)
-        proc.enabled = store.config.showProcesses
-        proc.windowSeconds = store.config.cpuWindow.seconds
-        netProc.enabled = store.config.showNetworkPanel && netExpanded
-        return VStack(alignment: .leading, spacing: 13) {
+        VStack(alignment: .leading, spacing: 13) {
             topCluster
 
             divider
