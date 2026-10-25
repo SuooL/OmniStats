@@ -1,45 +1,42 @@
 import Foundation
 
-// A single timestamped scalar reading.
 struct TimedSample {
-    let t: CFAbsoluteTime
+    let t: TimeInterval
     let v: Double
+    var cadence: TimeInterval = 2
 }
 
-// A rolling time-series buffer for one metric.
-//
-// Samplers call `record` on their native cadence; the buffer keeps at most
-// `retention` seconds of history and (optionally) coalesces samples closer than
-// `minInterval` so a fast sampler doesn't bloat a long window. Chart views pull a
-// slice via `window(seconds:)`. Values are plain Doubles (°C, percent, bytes/sec)
-// so a single buffer type serves temperature, fan%, and network rate alike.
+// Amortized prefix eviction and a hard capacity bound long-lived histories.
 final class MetricSeries {
-    private(set) var samples: [TimedSample] = []
-    let retention: Double            // seconds of history to keep
-    private let minInterval: Double  // min seconds between stored points (0 = store every call)
-    private var lastStored: CFAbsoluteTime = 0
+    private var storage: [TimedSample] = []
+    private var head = 0
+    let retention: Double
+    private let minInterval: Double
+    private let capacity: Int
+    var samples: [TimedSample] { Array(storage.dropFirst(head)) }
 
-    init(retention: Double, minInterval: Double = 0) {
-        self.retention = retention
-        self.minInterval = minInterval
+    init(retention: Double, minInterval: Double = 0, capacity: Int = 3601) {
+        self.retention = max(0, retention)
+        self.minInterval = max(0, minInterval)
+        self.capacity = max(1, capacity)
     }
 
-    func record(_ v: Double, at t: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) {
-        guard v.isFinite else { return }
-        if minInterval > 0, !samples.isEmpty, t - lastStored < minInterval { return }
-        samples.append(TimedSample(t: t, v: v))
-        lastStored = t
-        let cutoff = t - retention
-        if let first = samples.first, first.t < cutoff {
-            samples.removeAll { $0.t < cutoff }
+    func record(_ value: Double, at time: TimeInterval = sampleTime(), cadence: TimeInterval = 2) {
+        guard value.isFinite, time.isFinite else { return }
+        if let last = storage.last {
+            if time < last.t { storage.removeAll(keepingCapacity: true); head = 0 }
+            else if time - last.t < minInterval { return }
+        }
+        storage.append(TimedSample(t: time, v: value, cadence: max(1, cadence)))
+        while head < storage.count && storage[head].t < time - retention { head += 1 }
+        head = max(head, storage.count - capacity)
+        if head >= 512 || head * 2 >= storage.count {
+            storage.removeFirst(head); head = 0
         }
     }
 
-    /// The samples within the last `seconds` (chronological order).
-    func window(_ seconds: Double, now: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> [TimedSample] {
-        let cutoff = now - seconds
-        return samples.filter { $0.t >= cutoff }
+    func window(_ seconds: Double, now: TimeInterval = sampleTime()) -> [TimedSample] {
+        Array(storage.dropFirst(head).filter { $0.t >= now - seconds && $0.t <= now })
     }
-
-    var latest: Double? { samples.last?.v }
+    var latest: Double? { storage.last?.v }
 }

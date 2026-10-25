@@ -137,25 +137,21 @@ enum Theme {
 // macOS control (accent track when on, neutral track when off, sliding knob).
 struct ThemedToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack {
-            configuration.label
-            Spacer()
-            ZStack {
-                Capsule()
-                    .fill(configuration.isOn ? Theme.accent : Theme.line)
-                    .frame(width: 40, height: 22)
-                Circle()
-                    .fill(Color.white)
-                    .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
-                    .padding(2)
-                    .frame(width: 22, height: 22)
-                    .offset(x: configuration.isOn ? 9 : -9)
-            }
-            .animation(.easeInOut(duration: 0.18), value: configuration.isOn)
-            .contentShape(Capsule())
-            .onTapGesture { configuration.isOn.toggle() }
-            .accessibilityAddTraits(configuration.isOn ? [.isSelected] : [])
+        Button { configuration.isOn.toggle() } label: {
+            HStack {
+                configuration.label
+                Spacer()
+                ZStack {
+                    Capsule().fill(configuration.isOn ? Theme.accent : Theme.line).frame(width: 40, height: 22)
+                    Circle().fill(Color.white).shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+                        .padding(2).frame(width: 22, height: 22).offset(x: configuration.isOn ? 9 : -9)
+                }
+                .animation(.easeInOut(duration: 0.18), value: configuration.isOn)
+            }.contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityValue(L.t(configuration.isOn ? "toggle.on" : "toggle.off"))
+        .accessibilityAddTraits(configuration.isOn ? [.isSelected] : [])
     }
 }
 

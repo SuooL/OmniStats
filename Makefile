@@ -22,7 +22,7 @@ SPARKLE_URL := https://github.com/sparkle-project/Sparkle/releases/download/$(SP
 SPARKLE_DIR := $(BUILD)/sparkle
 SPARKLE_FW  := $(SPARKLE_DIR)/Sparkle.framework
 
-.PHONY: all app helper bundle dmg clean install uninstall run test test-runtime icon sparkle
+.PHONY: all app helper bundle dmg clean install uninstall run test test-logic test-runtime icon sparkle
 
 all: bundle helper
 
@@ -80,7 +80,8 @@ bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(SPARKLE_FW) packaging/Info.plist pa
 	@ditto $(SPARKLE_FW) $(DIST)/$(APP).app/Contents/Frameworks/Sparkle.framework
 	@# Ad-hoc sign only the outer app; Sparkle keeps its own signature (no hardened
 	@# runtime here, so a differently-signed framework still loads).
-	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app >/dev/null 2>&1 || true
+	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app
+	@codesign --verify --deep --strict $(DIST)/$(APP).app
 	@echo "Built $(DIST)/$(APP).app"
 
 run: bundle
@@ -114,7 +115,7 @@ test: $(BUILD)/sensors.o $(BUILD)/control.o
 	@$(BUILD)/clitest
 
 # AppKit regression checks with simulated sensors; requires a logged-in desktop.
-$(BUILD)/hardware_stubs.o: tests/hardware_stubs.c $(SRC)/sensors.h $(SRC)/control.h | $(BUILD)
+$(BUILD)/hardware_stubs.o: tests/hardware_stubs.c tests/hardware_stubs.h $(SRC)/sensors.h $(SRC)/control.h | $(BUILD)
 	$(CLANG) -I $(SRC) -c $< -o $@
 
 $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift $(BUILD)/hardware_stubs.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
@@ -125,6 +126,23 @@ $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) te
 
 test-runtime: $(BUILD)/runtime-tests
 	@$(BUILD)/runtime-tests
+
+$(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift tests/test_bridge.h tests/hardware_stubs.h $(BUILD)/hardware_stubs.o $(SPARKLE_FW) | $(BUILD)
+	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \
+	  $(BUILD)/hardware_stubs.o -import-objc-header tests/test_bridge.h \
+	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
+	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
+
+$(BUILD)/helper-safety-tests: tests/helper_safety_tests.m $(SRC)/smcd.m | $(BUILD)
+	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -o $@
+
+$(BUILD)/control-transport-tests: tests/control_transport_tests.m $(SRC)/control.m $(SRC)/control.h | $(BUILD)
+	$(CLANG) $(OBJC_FLAGS) tests/control_transport_tests.m -framework Foundation -o $@
+
+test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests
+	@$(BUILD)/logic-tests
+	@$(BUILD)/helper-safety-tests
+	@$(BUILD)/control-transport-tests
 
 clean:
 	@rm -rf $(BUILD) $(DIST)
