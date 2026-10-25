@@ -26,7 +26,7 @@ func appDisplayName(_ pid: pid_t) -> String {
 }
 
 struct ProcUsage: Identifiable {
-    let id = UUID()
+    var id: String { name }
     let name: String
     let cpu: Double     // percent; 100% == one full core (like Activity Monitor / top)
 }
@@ -58,7 +58,9 @@ final class ProcSampler: ObservableObject {
     init() {
         prime()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in self?.tick() }
+        timer?.tolerance = 0.2
     }
+    deinit { timer?.invalidate() }
 
     // MARK: sampling
     private func listPids() -> [pid_t] {

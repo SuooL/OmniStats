@@ -22,7 +22,7 @@ SPARKLE_URL := https://github.com/sparkle-project/Sparkle/releases/download/$(SP
 SPARKLE_DIR := $(BUILD)/sparkle
 SPARKLE_FW  := $(SPARKLE_DIR)/Sparkle.framework
 
-.PHONY: all app helper bundle dmg clean install uninstall run test icon sparkle
+.PHONY: all app helper bundle dmg clean install uninstall run test test-runtime icon sparkle
 
 all: bundle helper
 
@@ -112,6 +112,19 @@ test: $(BUILD)/sensors.o $(BUILD)/control.o
 	@$(CLANG) $(OBJC_FLAGS) $(SRC)/clitest.m $(BUILD)/sensors.o $(BUILD)/control.o \
 	  $(C_FRAMEWORKS) -o $(BUILD)/clitest
 	@$(BUILD)/clitest
+
+# AppKit regression checks with simulated sensors; requires a logged-in desktop.
+$(BUILD)/hardware_stubs.o: tests/hardware_stubs.c $(SRC)/sensors.h $(SRC)/control.h | $(BUILD)
+	$(CLANG) -I $(SRC) -c $< -o $@
+
+$(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift $(BUILD)/hardware_stubs.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
+	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
+	  $(BUILD)/hardware_stubs.o -import-objc-header $(SRC)/bridge.h \
+	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
+	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
+
+test-runtime: $(BUILD)/runtime-tests
+	@$(BUILD)/runtime-tests
 
 clean:
 	@rm -rf $(BUILD) $(DIST)
