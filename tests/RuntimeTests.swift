@@ -52,7 +52,8 @@ enum RuntimeTests {
         let mon = Monitor()
         let net = NetSampler()
         let proc = ProcSampler()
-        let netProc = NetProcSampler()
+        let netProc = NetProcSampler(runnerURL: URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent().appendingPathComponent("omnistats-nettop"))
         let engine = Engine(monitor: mon, store: store)
         let activity = ActivityState()
         let resourceSampler = ResourceSampler(read: {
@@ -81,6 +82,15 @@ enum RuntimeTests {
         activity.panelVisible = false; drain()
         check(resourceSampler.samplingInterval == nil, "Hidden panel must stop resource sampling")
         check(mon.samplingInterval == backgroundCadence, "Hidden panel must restore background cadence")
+        // Cadence transitions can invalidate the asynchronous startup sample.
+        // Establish real baseline content before asserting an unchanged render,
+        // and prevent live host traffic from changing this isolated cache check.
+        net.setSamplingInterval(nil)
+        mon.refresh()
+        let sampleDeadline = Date().addingTimeInterval(2)
+        while mon.lastSampleTime == 0 && Date() < sampleDeadline { drain(0.01) }
+        check(mon.lastSampleTime > 0, "Cache tests require the initial sensor sample")
+        drain()
         var imageWrites = 0
         let observation = button.observe(\.image, options: [.new]) { _, _ in imageWrites += 1 }
         defer { observation.invalidate() }
