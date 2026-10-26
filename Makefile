@@ -3,6 +3,7 @@
 
 APP        := OmniStats
 HELPER     := omnistats-smcd
+NETTOP     := omnistats-nettop
 BUILD      := build
 DIST       := dist
 SRC        := src
@@ -65,15 +66,21 @@ $(BUILD)/$(HELPER): $(SRC)/smcd.m $(SRC)/smc.h | $(BUILD)
 
 helper: $(BUILD)/$(HELPER)
 
+# Unprivileged, event-driven lifetime supervisor for the network reader.
+$(BUILD)/$(NETTOP): $(SRC)/nettop-runner.c | $(BUILD)
+	$(CLANG) -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 $< -o $@
+
 # --- .app bundle (ad-hoc signed) ---
 # The privileged helper + LaunchDaemon plist are embedded in Contents/Resources so
 # the app can self-install them via a single native admin prompt (no Terminal needed).
-bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
+bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
 	@rm -rf $(DIST)/$(APP).app
 	@mkdir -p $(DIST)/$(APP).app/Contents/MacOS $(DIST)/$(APP).app/Contents/Resources $(DIST)/$(APP).app/Contents/Frameworks
 	@cp packaging/Info.plist $(DIST)/$(APP).app/Contents/Info.plist
 	@cp $(BUILD)/$(APP) $(DIST)/$(APP).app/Contents/MacOS/$(APP)
 	@cp $(BUILD)/$(HELPER) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
+	@cp $(BUILD)/$(NETTOP) $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
+	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
 	@cp packaging/com.omnistats.smcd.plist $(DIST)/$(APP).app/Contents/Resources/com.omnistats.smcd.plist
 	@[ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns $(DIST)/$(APP).app/Contents/Resources/AppIcon.icns || echo "warn: icons/AppIcon.icns missing (run tools/gen-icon.sh)"
 	@# Embed Sparkle (ditto preserves the framework's symlinks + its existing signature).
@@ -124,7 +131,7 @@ $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) te
 	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
 
-test-runtime: $(BUILD)/runtime-tests
+test-runtime: $(BUILD)/runtime-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/runtime-tests
 
 $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift tests/test_bridge.h tests/hardware_stubs.h $(BUILD)/hardware_stubs.o $(SPARKLE_FW) | $(BUILD)
@@ -139,10 +146,11 @@ $(BUILD)/helper-safety-tests: tests/helper_safety_tests.m $(SRC)/smcd.m | $(BUIL
 $(BUILD)/control-transport-tests: tests/control_transport_tests.m $(SRC)/control.m $(SRC)/control.h | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) tests/control_transport_tests.m -framework Foundation -o $@
 
-test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests
+test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/logic-tests
 	@$(BUILD)/helper-safety-tests
 	@$(BUILD)/control-transport-tests
+	@python3 tests/nettop_lifecycle_tests.py $(BUILD)/$(NETTOP)
 
 clean:
 	@rm -rf $(BUILD) $(DIST)
