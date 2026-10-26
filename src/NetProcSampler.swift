@@ -83,6 +83,10 @@ final class NetProcSampler: ObservableObject {
     var enabled = false { didSet { if enabled != oldValue { update() } } }
     var suspended = false { didSet { if suspended != oldValue { update() } } }
     private var process: Process?
+    private let runnerURL: URL?
+    init(runnerURL: URL? = Bundle.main.url(forResource: "omnistats-nettop", withExtension: nil)) {
+        self.runnerURL = runnerURL
+    }
     var processIdentifier: pid_t? { process?.processIdentifier }
     private var readSource: DispatchSourceRead?
     private var generation = UUID()
@@ -96,6 +100,7 @@ final class NetProcSampler: ObservableObject {
     private func update() { enabled && !suspended ? start() : stop() }
     private func start() {
         guard process == nil else { return }
+        guard let runnerURL else { state = .unavailable; return }
         generation = UUID()
         let id = generation, session = Session()
         // nettop fully buffers stdout when attached to a pipe. A PTY makes
@@ -106,8 +111,8 @@ final class NetProcSampler: ObservableObject {
         _ = fcntl(master, F_SETFD, FD_CLOEXEC)
         let writer = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
         let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/usr/bin/nettop")
-        child.arguments = ["-n", "-P", "-x", "-l", "0", "-s", "3", "-J", "bytes_in,bytes_out"]
+        // The runner keeps stdin open and reaps nettop even after an app crash.
+        child.executableURL = runnerURL
         child.standardOutput = writer; child.standardError = FileHandle.nullDevice
         child.standardInput = FileHandle.nullDevice
         state = .warmingUp

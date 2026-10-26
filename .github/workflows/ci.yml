@@ -27,6 +27,7 @@ jobs:
           test -f dist/OmniStats.app/Contents/MacOS/OmniStats
           test -f dist/OmniStats.app/Contents/Resources/omnistats-smcd
           test -f build/omnistats-smcd
+          test -x dist/OmniStats.app/Contents/Resources/omnistats-nettop
 
       - name: Package artifact
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
