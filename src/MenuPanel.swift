@@ -1,5 +1,18 @@
 import SwiftUI
 
+// Shared chrome for the dashboard and its adjacent network details panel.
+struct PanelSurface: ViewModifier {
+    let fill: Color
+    let line: Color
+
+    func body(content: Content) -> some View {
+        content
+            .background(fill)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(line, lineWidth: 1))
+    }
+}
+
 struct Ring: View {
     var value: Double
     var title: String
@@ -27,7 +40,6 @@ struct MenuPanel: View {
     let engine: Engine
     @ObservedObject var net: NetSampler
     @ObservedObject var proc: ProcSampler
-    @ObservedObject var netProc: NetProcSampler
     let resources: ResourceSampler
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
@@ -73,7 +85,7 @@ struct MenuPanel: View {
 
             if store.config.showProcesses { processSection }
 
-            // Network sits below the CPU/process section; the row expands in place.
+            // Details open in an adjacent panel without changing this layout.
             if store.config.showNetworkPanel { networkSection }
 
             if (!mon.helperAvailable || mon.helperNeedsUpdate) && mon.fanCount > 0 {
@@ -98,13 +110,11 @@ struct MenuPanel: View {
             }.font(.system(size: 12))
         }
         .padding(14).frame(width: 300)
-        // Report an exact vertical size: SizingHostingView reads this as the
-        // window's target height, so the panel window is always exactly as tall
-        // as its content — no stale height, no centring, no transparent bands.
+        // Report natural height and pin content to the top of the controller's
+        // whole-point document frame. Network disclosure never changes it.
         .fixedSize(horizontal: false, vertical: true)
-        .background(Theme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(Theme.line, lineWidth: 1))
+        .frame(maxHeight: .infinity, alignment: .top)
+        .modifier(PanelSurface(fill: Theme.surface, line: Theme.line))
         .environment(\.colorScheme, store.config.appearance.colorScheme)
     }
 
@@ -167,18 +177,10 @@ struct MenuPanel: View {
     }
 
     // Network: a tappable row (upload/download for the most active interface).
-    // Tapping expands, in place, a 1h up/down history chart + the top network
-    // apps; tapping again collapses. No separate window.
+    // Tapping toggles the controller-owned network details window.
     private var networkSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             divider
-            // Toggle instantly. An animated disclosure was measured not to work:
-            // NSHostingView reports the *final* ideal size as soon as the state
-            // flips (one intrinsicContentSize invalidation, not one per frame),
-            // so the window would reach its new height while the content was
-            // still interpolating — and compress the content for the rest of the
-            // animation. Instant means content and window settle in the same
-            // layout pass, which is the whole point of owning the panel.
             Button { state.netExpanded.toggle() } label: {
                 HStack(spacing: 6) {
                     Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
@@ -193,13 +195,7 @@ struct MenuPanel: View {
                 }
                 .contentShape(Rectangle())
             }.buttonStyle(.plain)
-
-            if netExpanded {
-                DualSparkline(up: net.txHistory.samples, down: net.rxHistory.samples,
-                              windowSeconds: 3600, now: sampleTime(),
-                              kind: store.config.netChartKind)
-                netProcList
-            }
+            .help(L.t(netExpanded ? "network.hideDetails" : "network.showDetails"))
         }
     }
     private func netStat(_ icon: String, _ rate: Double) -> some View {
@@ -207,36 +203,6 @@ struct MenuPanel: View {
             Image(systemName: icon).font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.speed(rate))
             Text(humanRate(rate)).font(Theme.telemetry(12)).foregroundStyle(Theme.speed(rate))
         }
-    }
-
-    // Top processes by network throughput, merged per app (nettop-backed).
-    private var netProcList: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(L.t("m.netProcHeader")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
-            if netProc.state == .warmingUp {
-                Text(L.t("network.warmingUp")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            } else if netProc.state == .unavailable {
-                Text(L.t("network.unavailable")).font(.system(size: 11)).foregroundStyle(.orange)
-            } else if netProc.top.isEmpty {
-                Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            } else {
-                ForEach(netProc.top) { p in
-                    HStack(spacing: 6) {
-                        Text(p.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
-                            .lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        netMini("arrow.up", p.txBps)
-                        netMini("arrow.down", p.rxBps)
-                    }
-                }
-            }
-        }
-    }
-    private func netMini(_ icon: String, _ rate: Double) -> some View {
-        HStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 8, weight: .bold)).foregroundStyle(Theme.speed(rate))
-            Text(humanRate(rate)).font(Theme.telemetry(10)).foregroundStyle(Theme.speed(rate))
-        }.frame(width: 74, alignment: .trailing)
     }
 
     // Top CPU processes, merged per program.

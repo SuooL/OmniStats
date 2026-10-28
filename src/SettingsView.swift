@@ -54,6 +54,7 @@ struct SettingsView: View {
                         Spacer()
                     }
                     .padding(.vertical, 7).padding(.horizontal, 8)
+                    .contentShape(Rectangle())
                     .background(state.section == s ? Theme.accent.opacity(0.16) : .clear)
                     .foregroundStyle(state.section == s ? Theme.accent : Theme.ink2)
                     .clipShape(RoundedRectangle(cornerRadius: 7))

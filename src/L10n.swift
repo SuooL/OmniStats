@@ -53,6 +53,9 @@ enum L {
 
     private struct S { let zhHans, en, zhHant, ja: String }
     private static let table: [String: S] = [
+        "network.showDetails": S(zhHans: "展开网络详情", en: "Show network details", zhHant: "展開網路詳細資訊", ja: "ネットワークの詳細を表示"),
+        "network.hideDetails": S(zhHans: "收起网络详情", en: "Hide network details", zhHant: "收合網路詳細資訊", ja: "ネットワークの詳細を閉じる"),
+        "network.lastHour": S(zhHans: "最近 1 小时", en: "Last hour", zhHant: "最近 1 小時", ja: "過去1時間"),
         "refresh.title": S(zhHans: "采样与能耗", en: "Sampling & energy", zhHant: "取樣與耗能", ja: "サンプリングと省電力"),
         "refresh.mode": S(zhHans: "后台刷新", en: "Background refresh", zhHant: "背景重新整理", ja: "バックグラウンド更新"),
         "refresh.responsive": S(zhHans: "快速", en: "Fast", zhHant: "快速", ja: "高速"),
@@ -69,6 +72,7 @@ enum L {
         "network.unavailable": S(zhHans: "进程速率暂不可用，重新展开后重试。", en: "Process rates unavailable. Collapse and expand to retry.", zhHant: "程序速率暫時無法使用，重新展開後重試。", ja: "プロセス通信速度を取得できません。閉じてから再度開いてください。"),
         "toggle.on": S(zhHans: "已开启", en: "On", zhHant: "已開啟", ja: "オン"),
         "toggle.off": S(zhHans: "已关闭", en: "Off", zhHant: "已關閉", ja: "オフ"),
+        "resource.cpuHelp": S(zhHans: "整机 CPU 使用率：采样期间所有核心的非空闲时间占比，100% 表示全部核心满负载。", en: "System CPU usage: non-idle time across all cores over the sampling interval. 100% means all cores are fully busy.", zhHant: "整機 CPU 使用率：取樣期間所有核心的非閒置時間佔比，100% 表示全部核心滿載。", ja: "システム CPU 使用率。サンプリング間隔における全コアの非アイドル時間の割合で、100% は全コアのフル稼働を示します。"),
         "resource.memory": S(zhHans: "内存", en: "Memory", zhHant: "記憶體", ja: "メモリ"),
         "resource.disk": S(zhHans: "启动盘", en: "Startup disk", zhHant: "啟動磁碟", ja: "起動ディスク"),
         "resource.loading": S(zhHans: "采集中…", en: "Loading…", zhHant: "取樣中…", ja: "取得中…"),

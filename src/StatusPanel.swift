@@ -14,6 +14,24 @@ final class PanelState: ObservableObject {
     @Published var netExpanded = false
 }
 
+enum NetworkPanelLayout {
+    static let gap: CGFloat = 8
+
+    static func frame(beside parent: NSRect, contentSize: CGSize, visible: NSRect) -> NSRect {
+        let width = ceil(contentSize.width)
+        let top = min(parent.maxY, visible.maxY)
+        let height = min(ceil(contentSize.height), max(1, floor(top - visible.minY - 8)))
+        let left = parent.minX - gap - width
+        let right = parent.maxX + gap
+        let minX = visible.minX + 8, maxX = visible.maxX - width - 8
+        let x: CGFloat
+        if left >= minX { x = left }
+        else if right <= maxX { x = right }
+        else { x = max(minX, min(left, maxX)) }
+        return NSRect(x: floor(x), y: top - height, width: width, height: height)
+    }
+}
+
 // MARK: - Panel window
 // Borderless, non-activating, and key-capable so Esc and outside-click dismissal
 // behave like a real menu.
@@ -75,7 +93,10 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let panelState = PanelState()
     private(set) var panel: PanelWindow?
     private(set) var hosting: SizingHostingView<MenuPanel>?
+    private(set) var networkPanel: PanelWindow?
+    private(set) var networkHosting: SizingHostingView<NetworkDetailsView>?
     private var scrolling: NSScrollView?
+    private var networkScrolling: NSScrollView?
     var maximumPanelHeight: CGFloat = .greatestFiniteMagnitude
     private var labelRefreshPending = false
     private var lastLabelContent: MenuBarContent?
@@ -125,10 +146,14 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         .store(in: &bag)
 
         panelState.$netExpanded
+        .removeDuplicates()
         .sink { [weak self] expanded in MainActor.assumeIsolated {
             guard let self else { return }
-            self.netProc.enabled = self.panel?.isVisible == true
-                && self.store.config.showNetworkPanel && expanded
+            if expanded && self.panel?.isVisible == true && self.store.config.showNetworkPanel {
+                self.openNetworkDetails()
+            } else {
+                self.closeNetworkDetails()
+            }
         } }
         .store(in: &bag)
 
@@ -139,8 +164,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
 
     private func configureSamplers() {
         proc.windowSeconds = store.config.cpuWindow.seconds
-        netProc.enabled = panel?.isVisible == true
-            && store.config.showNetworkPanel && panelState.netExpanded
+        if !store.config.showNetworkPanel { panelState.netExpanded = false }
+        netProc.enabled = panel?.isVisible == true && networkPanel?.isVisible == true
+            && store.config.showNetworkPanel
     }
 
     private func scheduleLabelRefresh() {
@@ -205,14 +231,20 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // MARK: panel lifecycle
     private func buildPanel() {
         let root = MenuPanel(mon: mon, store: store, engine: engine, net: net, proc: proc,
-                             netProc: netProc, resources: resources, state: panelState,
+                             resources: resources, state: panelState,
                              onOpenSettings: { [weak self] in
                                  self?.closePanel()
                                  self?.onOpenSettings()
                              })
         let host = SizingHostingView(rootView: root)
         host.onSizeChange = { [weak self] size in self?.applyContentSize(size) }
+        let (window, scroll) = makePanel(document: host)
+        panel = window
+        hosting = host
+        scrolling = scroll
+    }
 
+    private func makePanel(document: NSView) -> (PanelWindow, NSScrollView) {
         let p = PanelWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 400),
                             styleMask: [.borderless, .nonactivatingPanel],
                             backing: .buffered, defer: false)
@@ -224,8 +256,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         scroll.hasVerticalScroller = false
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
-        scroll.documentView = host
-        scrolling = scroll
+        scroll.documentView = document
         p.contentView = scroll
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -239,14 +270,71 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         p.delegate = self
 
-        panel = p
-        hosting = host
+        return (p, scroll)
+    }
+
+    private func openNetworkDetails() {
+        guard let panel, panel.isVisible, networkPanel == nil else { return }
+        let root = NetworkDetailsView(net: net, netProc: netProc, store: store,
+                                      onClose: { [weak self] in self?.panelState.netExpanded = false })
+        let host = SizingHostingView(rootView: root)
+        let (detail, scroll) = makePanel(document: host)
+        detail.title = L.t("m.network")
+        networkPanel = detail
+        networkHosting = host
+        networkScrolling = scroll
+        host.onSizeChange = { [weak self] _ in self?.layoutNetworkDetails() }
+        host.layoutSubtreeIfNeeded()
+        layoutNetworkDetails()
+        panel.addChildWindow(detail, ordered: .above)
+        detail.orderFront(nil)
+        netProc.enabled = true
+    }
+
+    private func layoutNetworkDetails() {
+        guard let panel, panel.isVisible, let networkPanel, let host = networkHosting,
+              let visible = panel.screen?.visibleFrame ?? panelVisibleFrame else { return }
+        let size = host.intrinsicContentSize
+        guard size.width.isFinite, size.height.isFinite, size.width > 1, size.height > 1 else { return }
+        let documentSize = CGSize(width: ceil(size.width), height: ceil(size.height))
+        if host.frame.size != documentSize { host.setFrameSize(documentSize) }
+        let frame = NetworkPanelLayout.frame(beside: panel.frame, contentSize: documentSize, visible: visible)
+        if networkPanel.frame != frame {
+            networkPanel.setFrame(frame, display: true)
+            networkPanel.invalidateShadow()
+        }
+        if let scroll = networkScrolling {
+            let y = min(scroll.contentView.bounds.minY, max(0, documentSize.height - frame.height))
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    private func closeNetworkDetails() {
+        netProc.enabled = false
+        guard let detail = networkPanel else { return }
+        let restoreFocus = detail.isKeyWindow && !closingPanel
+        detail.delegate = nil
+        panel?.removeChildWindow(detail)
+        detail.orderOut(nil)
+        networkHosting?.onSizeChange = nil
+        networkScrolling?.documentView = nil
+        detail.contentView = nil
+        detail.close()
+        networkPanel = nil
+        networkHosting = nil
+        networkScrolling = nil
+        if restoreFocus, panel?.isVisible == true { panel?.makeKeyAndOrderFront(nil) }
     }
 
     // Size the scroll viewport to fit the screen while retaining full document height.
     private func boundedContentSize(_ size: CGSize) -> CGSize {
-        let available = panelVisibleFrame.map { max(100, pinnedTop - $0.minY - 8) } ?? size.height
-        return CGSize(width: size.width, height: min(size.height, available, maximumPanelHeight))
+        let available = panelVisibleFrame.map { max(100, pinnedTop - $0.minY - 8) } ?? ceil(size.height)
+        // AppKit rounds window geometry to whole points. Fractional disclosure
+        // heights can otherwise round the origin and height in opposite
+        // directions, shifting the top edge by one point between frames.
+        return CGSize(width: ceil(size.width),
+                      height: min(ceil(size.height), floor(available), floor(maximumPanelHeight)))
     }
 
     private func applyContentSize(_ size: CGSize) {
@@ -254,12 +342,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
               size.width.isFinite, size.height.isFinite,
               size.width > 1, size.height > 1 else { return }
         let bounded = boundedContentSize(size)
-        let documentChanged = hosting.map { abs($0.frame.height-size.height) > 0.5 || abs($0.frame.width-size.width) > 0.5 } ?? false
+        let documentSize = CGSize(width: ceil(size.width), height: ceil(size.height))
+        let documentChanged = hosting.map { abs($0.frame.height-documentSize.height) > 0.5 || abs($0.frame.width-documentSize.width) > 0.5 } ?? false
         let viewportChanged = abs(panel.frame.height-bounded.height) > 0.5 || abs(panel.frame.width-bounded.width) > 0.5
         guard documentChanged || viewportChanged else { return }
         resizing = true
         defer { resizing = false }
-        if documentChanged { hosting?.setFrameSize(size) }
+        if documentChanged { hosting?.setFrameSize(documentSize) }
         var frame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: bounded))
         frame.origin.x = panel.frame.origin.x
         frame.origin.y = pinnedTop - frame.height
@@ -268,10 +357,11 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             panel.invalidateShadow()
         }
         if let scrolling {
-            let y = min(scrolling.contentView.bounds.minY, max(0, size.height-bounded.height))
+            let y = min(scrolling.contentView.bounds.minY, max(0, documentSize.height-bounded.height))
             scrolling.contentView.scroll(to: NSPoint(x: 0, y: max(0, y)))
             scrolling.reflectScrolledClipView(scrolling.contentView)
         }
+        layoutNetworkDetails()
     }
 
     @objc private func togglePanel() {
@@ -296,11 +386,12 @@ final class StatusItemController: NSObject, NSWindowDelegate {
             // programmatic opening; keep the dashboard on its actual screen.
             pinnedTop = anchor.minY > visible.minY ? min(anchor.minY - 6, visible.maxY) : visible.maxY - 6
         } else { pinnedTop = anchor.minY - 6 }
+        pinnedTop = floor(pinnedTop)
         if panel == nil { buildPanel() }
         guard let panel, let hosting else { return }
         hosting.layoutSubtreeIfNeeded()
         let size = hosting.intrinsicContentSize
-        hosting.setFrameSize(size)
+        hosting.setFrameSize(CGSize(width: ceil(size.width), height: ceil(size.height)))
         let frameSize = panel.frameRect(forContentRect: NSRect(origin: .zero, size: boundedContentSize(size))).size
 
         var x = anchor.midX - frameSize.width / 2
@@ -327,6 +418,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         activity.panelVisible = false
         statusItem.button?.highlight(false)
         panelState.netExpanded = false
+        closeNetworkDetails()
         netProc.enabled = false          // stop the nettop child as soon as it's off screen
         // orderOut alone retains the hosting tree and its live subscriptions.
         // Destroy it so hidden charts cannot keep SwiftUI laying out.
@@ -344,10 +436,17 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
             [weak self] _ in self?.closePanel()
         }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard event.keyCode == 53 else { return event }   // Esc
-            self?.closePanel()
-            return nil
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown, event.keyCode == 53 {
+                if self.panelState.netExpanded { self.panelState.netExpanded = false }
+                else { self.closePanel() }
+                return nil
+            }
+            if event.type != .keyDown, event.window !== self.panel, event.window !== self.networkPanel {
+                self.closePanel()
+            }
+            return event
         }
     }
     private func removeMonitors() {
@@ -355,7 +454,19 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         if let m = localMonitor  { NSEvent.removeMonitor(m); localMonitor = nil }
     }
 
-    func windowDidResignKey(_ notification: Notification) { closePanel() }
+    func windowDidResignKey(_ notification: Notification) {
+        // AppKit sends resign before the other panel becomes key. Decide after
+        // the focus transfer, treating both panels as one transient group.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel?.isVisible == true else { return }
+            if let key = NSApp.keyWindow, key === self.panel || key === self.networkPanel { return }
+            self.closePanel()
+        }
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window === panel { layoutNetworkDetails() }
+    }
 }
 
 // MARK: - Settings window
