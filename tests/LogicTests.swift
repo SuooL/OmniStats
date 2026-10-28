@@ -14,6 +14,23 @@ struct LogicTests {
     @MainActor static func main() {
         _ = NSApplication.shared
         var config = OmniStatsConfig()
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let detailSize = CGSize(width: 300, height: 320)
+        let dashboard = NSRect(x: 1000, y: 300, width: 300, height: 548)
+        let adjacent = NetworkPanelLayout.frame(beside: dashboard, contentSize: detailSize, visible: screen)
+        check(adjacent.maxX == dashboard.minX - 8 && adjacent.maxY == dashboard.maxY,
+              "Network details prefer the left side with an 8-point gap and aligned tops")
+        let leftEdge = NSRect(x: 8, y: 300, width: 300, height: 548)
+        let flipped = NetworkPanelLayout.frame(beside: leftEdge, contentSize: detailSize, visible: screen)
+        check(flipped.minX == leftEdge.maxX + 8, "Network details fall back to the right without moving the dashboard")
+        let shortScreen = NSRect(x: -1440, y: -200, width: 1440, height: 260)
+        let shortParent = NSRect(x: -320, y: -140, width: 300, height: 200)
+        let boundedDetail = NetworkPanelLayout.frame(beside: shortParent, contentSize: detailSize, visible: shortScreen)
+        check(shortScreen.contains(boundedDetail) && boundedDetail.height < detailSize.height,
+              "Network details fit short screens and negative monitor coordinates")
+        let narrow = NSRect(x: 0, y: 0, width: 640, height: 900)
+        check(narrow.contains(NetworkPanelLayout.frame(beside: NSRect(x: 170, y: 300, width: 300, height: 548),
+              contentSize: detailSize, visible: narrow)), "Narrow-screen fallback keeps details visible")
         check(RefreshMode.balanced.title == L.t("refresh.balanced"), "Refresh titles must be localized")
         func policy(panel: Bool = false, display: Bool = false, asleep: Bool = false, lowPower: Bool = false) -> SamplingPolicy {
             SamplingPolicy(config: config, panelVisible: panel, settingsVisible: false,
@@ -67,9 +84,35 @@ struct LogicTests {
         check(CapacityUsage(used: 4, total: 8)?.fraction == 0.5, "Capacity fractions")
         check(ResourceReader.validGPUPercent(0) == 0 && ResourceReader.validGPUPercent(100) == 100
               && ResourceReader.validGPUPercent(.nan) == nil && ResourceReader.validGPUPercent(101) == nil, "GPU telemetry validation")
+        var cpu = SystemCPUUsage()
+        let baseline = CPUUsageCounters(user: 100, system: 50, idle: 850, nice: 0)
+        let busy30 = CPUUsageCounters(user: 120, system: 60, idle: 920, nice: 0)
+        check(cpu.consume(baseline) == nil, "CPU requires an interval, not an average since boot")
+        check(cpu.consume(busy30) == 30, "CPU must normalize aggregate busy ticks to 0...100")
+        check(cpu.consume(busy30) == nil, "An empty CPU interval must not report zero usage")
+        check(cpu.consume(CPUUsageCounters(user: 120, system: 60, idle: 1020, nice: 0)) == 0, "Fully idle CPU")
+        check(cpu.consume(CPUUsageCounters(user: 220, system: 60, idle: 1020, nice: 0)) == 100, "Fully busy CPU")
+        check(cpu.consume(CPUUsageCounters(user: 220, system: 60, idle: 1070, nice: 50)) == 50, "Nice time counts as busy")
+        check(cpu.consume(nil) == nil && cpu.needsBaseline, "Failed CPU reads invalidate the baseline")
+        check(cpu.consume(baseline) == nil, "CPU recovery must establish a fresh interval")
+        var wrappingCPU = SystemCPUUsage()
+        _ = wrappingCPU.consume(CPUUsageCounters(user: .max - 5, system: 0, idle: 100, nice: 0))
+        check(wrappingCPU.consume(CPUUsageCounters(user: 4, system: 0, idle: 110, nice: 0)) == 50,
+              "CPU tick wrap must retain the correct delta")
+        var wideCPU = SystemCPUUsage()
+        _ = wideCPU.consume(CPUUsageCounters(user: 0, system: 0, idle: 0, nice: 0))
+        check(wideCPU.consume(CPUUsageCounters(user: .max, system: .max, idle: .max, nice: .max)) == 75,
+              "Aggregate CPU deltas must not overflow 32 bits")
         let liveResources = ResourceReader().sample()
         check(liveResources.memory != nil && liveResources.disk != nil, "Read-only memory and startup capacity APIs must work")
-        print("Resource API smoke test: memory and disk available; GPU available: \(liveResources.gpuPercent != nil)")
+        check(liveResources.cpuWarmingUp && liveResources.cpuPercent == nil, "Live CPU API must establish a baseline")
+        let liveResourceSampler = ResourceSampler()
+        liveResourceSampler.setSamplingInterval(10)
+        wait { liveResourceSampler.snapshot.cpuPercent != nil }
+        check((0...100).contains(liveResourceSampler.snapshot.cpuPercent!) && !liveResourceSampler.snapshot.cpuWarmingUp,
+              "Live CPU utilization must be ready before the normal 10-second interval")
+        liveResourceSampler.setSamplingInterval(nil)
+        print("Resource API smoke test: CPU, memory and disk available; GPU available: \(liveResources.gpuPercent != nil)")
         let gate = DispatchSemaphore(value: 0), started = DispatchSemaphore(value: 0)
         var resourceReads = 0
         let resourceSampler = ResourceSampler(read: {
@@ -85,6 +128,18 @@ struct LogicTests {
         wait { resourceSampler.hasSample }
         check(resourceReads == 2 && resourceSampler.snapshot.gpuPercent == 25, "Quick reopen must discard stale work and prime a fresh resource snapshot")
         resourceSampler.setSamplingInterval(nil)
+
+        var warmingReads = 0
+        let warmingSampler = ResourceSampler(read: {
+            warmingReads += 1
+            return ResourceSnapshot(cpuWarmingUp: true)
+        })
+        warmingSampler.setSamplingInterval(10)
+        wait { warmingSampler.hasSample }
+        warmingSampler.setSamplingInterval(nil)
+        let cancellationDeadline = Date().addingTimeInterval(0.3)
+        while Date() < cancellationDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        check(warmingReads == 1, "Closing the panel must cancel the CPU warmup follow-up")
 
         var history = CPUHistory()
         history.record(["App": 100], from: 0, to: 2)
