@@ -44,27 +44,34 @@ struct NetworkDetailsView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(L.t("m.netProcHeader")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
                 .frame(height: 14)
-            if netProc.state == .warmingUp {
-                Text(L.t("network.warmingUp")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            } else if netProc.state == .unavailable {
-                Text(L.t("network.unavailable")).font(.system(size: 11)).foregroundStyle(.orange)
-            } else if netProc.top.isEmpty {
-                Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            } else {
-                ForEach(netProc.top) { process in
-                    HStack(spacing: 6) {
-                        Text(process.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
-                            .lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        rate("arrow.up", process.txBps)
-                        rate("arrow.down", process.rxBps)
-                    }
-                    .frame(height: 16)
-                }
-            }
+            processRows
         }
         // Keep the detail window stable while waiting, idle or showing 1–5 apps.
-        .frame(height: 14 + 5 + 5 * 16 + 4 * 5, alignment: .topLeading)
+        // Header (14), header gap (5), five rows (80), four row gaps (20).
+        .frame(height: 119, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var processRows: some View {
+        if netProc.state == .warmingUp {
+            Text(L.t("network.warmingUp")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+        } else if netProc.state == .unavailable {
+            Text(L.t("network.unavailable")).font(.system(size: 11)).foregroundStyle(.orange)
+        } else if netProc.top.isEmpty {
+            Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+        } else {
+            ForEach(netProc.top) { process in processRow(process) }
+        }
+    }
+
+    private func processRow(_ process: NetProcUsage) -> some View {
+        HStack(spacing: 6) {
+            Text(process.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer()
+            rate("arrow.up", process.txBps)
+            rate("arrow.down", process.rxBps)
+        }
+        .frame(height: 16)
     }
 
     private func rate(_ icon: String, _ value: Double) -> some View {
