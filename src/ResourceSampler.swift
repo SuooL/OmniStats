@@ -19,14 +19,39 @@ struct CapacityUsage: Equatable {
 }
 
 struct ResourceSnapshot: Equatable {
+    var cpuPercent: Double?
     var memory: CapacityUsage?
     var disk: CapacityUsage?
     var gpuPercent: Double?
+    var cpuWarmingUp = false
+}
+
+struct CPUUsageCounters {
+    let user: UInt32, system: UInt32, idle: UInt32, nice: UInt32
+}
+
+// Aggregate busy time across all cores, normalized to 0...100 (unlike the
+// per-process ranking, where 100% represents one core). Mach ticks wrap at 32
+// bits, so subtract each counter modulo 2^32 and sum in 64 bits.
+struct SystemCPUUsage {
+    private var previous: CPUUsageCounters?
+    var needsBaseline: Bool { previous == nil }
+
+    mutating func consume(_ counters: CPUUsageCounters?) -> Double? {
+        defer { previous = counters }
+        guard let counters, let previous else { return nil }
+        let busy = UInt64(counters.user &- previous.user)
+            + UInt64(counters.system &- previous.system) + UInt64(counters.nice &- previous.nice)
+        let total = busy + UInt64(counters.idle &- previous.idle)
+        guard total > 0 else { return nil }
+        return Double(busy) / Double(total) * 100
+    }
 }
 
 // Queue-owned reader. No subprocess, sudo, recursive disk scan or GPU workload.
 final class ResourceReader {
     private let host = mach_host_self()
+    private var cpuUsage = SystemCPUUsage()
     private var accelerator: io_registry_entry_t = 0
     private var lastGPUDiscovery: TimeInterval = -.infinity
     deinit {
@@ -35,7 +60,24 @@ final class ResourceReader {
     }
 
     func sample() -> ResourceSnapshot {
-        ResourceSnapshot(memory: memoryUsage(), disk: diskUsage(), gpuPercent: gpuUsage())
+        let counters = cpuCounters()
+        let warmingUp = counters != nil && cpuUsage.needsBaseline
+        return ResourceSnapshot(cpuPercent: cpuUsage.consume(counters), memory: memoryUsage(),
+                                disk: diskUsage(), gpuPercent: gpuUsage(), cpuWarmingUp: warmingUp)
+    }
+    func resetCPU() { cpuUsage = SystemCPUUsage() }
+
+    private func cpuCounters() -> CPUUsageCounters? {
+        var statistics = host_cpu_load_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &statistics) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics(host, HOST_CPU_LOAD_INFO, $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        let ticks = statistics.cpu_ticks
+        return CPUUsageCounters(user: ticks.0, system: ticks.1, idle: ticks.2, nice: ticks.3)
     }
     private func memoryUsage() -> CapacityUsage? {
         var statistics = vm_statistics64_data_t()
@@ -88,20 +130,31 @@ final class ResourceSampler: ObservableObject {
     @Published private(set) var hasSample = false
     private let queue = DispatchQueue(label: "com.omnistats.resources", qos: .utility)
     private let read: () -> ResourceSnapshot
+    private let reset: () -> Void
     private var timer: Timer?
     private var inFlight = false
     private var generation = 0
     private(set) var samplingInterval: TimeInterval?
 
     init(read: (() -> ResourceSnapshot)? = nil) {
-        let reader = ResourceReader()
-        self.read = read ?? { reader.sample() }
+        if let read {
+            self.read = read
+            self.reset = {}
+        } else {
+            let reader = ResourceReader()
+            self.read = { reader.sample() }
+            self.reset = { reader.resetCPU() }
+        }
     }
     deinit { timer?.invalidate() }
     func setSamplingInterval(_ interval: TimeInterval?) {
         guard interval != samplingInterval else { return }
+        let wasPaused = samplingInterval == nil
         samplingInterval = interval; generation += 1
         timer?.invalidate(); timer = nil
+        if interval == nil || wasPaused {
+            queue.async { [reset] in reset() }
+        }
         guard let interval else { return }
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in self?.refresh() }
         timer.tolerance = interval * 0.1
@@ -124,6 +177,14 @@ final class ResourceSampler: ObservableObject {
                 }
                 if self.snapshot != value { self.snapshot = value }
                 if !self.hasSample { self.hasSample = true }
+                if value.cpuWarmingUp {
+                    // One short follow-up primes CPU without waiting 10 s or
+                    // keeping a fast timer alive while the panel is hidden.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                        guard let self, self.generation == current else { return }
+                        self.refresh()
+                    }
+                }
             }
         }
     }

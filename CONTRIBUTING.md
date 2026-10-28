@@ -63,8 +63,14 @@ in `dist/OmniStats.app`, so validation does not replace its bundle.
 `make test-runtime` uses isolated preferences and hardware stubs, so it never
 connects to the installed fan-control helper. It checks batched/unchanged menu-bar
 rendering, stable process identities, panel resizing, and release/reopening of
-window hosting trees. It also prints a short idle CPU/footprint sample; this is
-not a substitute for profiling the real app or a long-running leak test.
+window hosting trees. Network detail checks cover adjacent placement, an
+unchanged dashboard frame, stable detail height across row counts, focus
+transfers, close/Escape handling, rapid toggles and release of both windows.
+The test event loop dispatches AppKit activation and focus events as well as
+run-loop work. It also prints a short idle CPU/footprint sample. Settings
+navigation tests send mouse clicks to the text, icon/text gap, trailing space
+and padding of every sidebar tab. These checks are not a substitute for profiling
+the real app or a long-running leak test.
 
 ## Project layout
 

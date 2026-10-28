@@ -11,7 +11,23 @@ enum RuntimeTests {
     }
 
     @MainActor static func drain(_ seconds: TimeInterval = 0.05) {
-        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        // RunLoop alone delivers SwiftUI/dispatch work but does not dispatch
+        // AppKit's queued activation and focus events without NSApplication.run.
+        let deadline = Date().addingTimeInterval(seconds)
+        repeat {
+            while let event = NSApp.nextEvent(matching: .any, until: .distantPast,
+                                             inMode: .default, dequeue: true) {
+                NSApp.sendEvent(event)
+            }
+            RunLoop.main.run(until: min(deadline, Date().addingTimeInterval(0.01)))
+        } while Date() < deadline
+    }
+
+    @MainActor static func activateApp() {
+        NSApp.activate(ignoringOtherApps: true)
+        let deadline = Date().addingTimeInterval(2)
+        while !NSApp.isActive && Date() < deadline { drain(0.01) }
+        check(NSApp.isActive, "Focus tests require the test application to be active")
     }
 
     @MainActor static func snapshot(_ view: NSView?, name: String) {
@@ -24,6 +40,85 @@ enum RuntimeTests {
         view.cacheDisplay(in: view.bounds, to: bitmap)
         let url = URL(fileURLWithPath: directory).appendingPathComponent(name + ".png")
         try! bitmap.representation(using: .png, properties: [:])!.write(to: url)
+    }
+
+    // Compare the dashboard above the network section in screen-relative
+    // coordinates. A stable window frame alone cannot catch content centering
+    // or compression inside the hosting view.
+    @MainActor static func upperPanelImage(_ view: NSView) -> Data {
+        let height: CGFloat = 390
+        let rect = NSRect(x: view.bounds.minX,
+                          y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
+                          width: view.bounds.width, height: height)
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: rect) else {
+            fatalError("Cannot capture the upper dashboard")
+        }
+        view.cacheDisplay(in: rect, to: bitmap)
+        return bitmap.representation(using: .png, properties: [:])!
+    }
+
+    @MainActor static func checkPanelSurface(_ view: NSView) {
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        let actual = bitmap.colorAt(x: bitmap.pixelsWide / 2, y: 6)!.usingColorSpace(.sRGB)!
+        // Offscreen AppKit bitmaps vary by display color profile. Verify the
+        // selected light/dark surface, rather than exact encoded RGB bytes.
+        let brightness = (actual.redComponent + actual.greenComponent + actual.blueComponent) / 3
+        check(Theme.mode == .light ? brightness > 0.7 : brightness < 0.3,
+              "Both panel surfaces must update to the selected appearance")
+    }
+
+    @MainActor static func click(_ point: NSPoint, in window: NSWindow) {
+        let local = window.convertPoint(fromScreen: point)
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: local, modifierFlags: [],
+                               timestamp: timestamp + (type == .leftMouseUp ? 0.01 : 0),
+                               windowNumber: window.windowNumber, context: nil,
+                               eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        // Queue mouse-up first so AppKit controls with synchronous tracking can
+        // consume it while handling mouse-down. SwiftUI may leave it queued.
+        NSApp.postEvent(event(.leftMouseUp), atStart: true)
+        window.sendEvent(event(.leftMouseDown))
+        if let up = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast,
+                                   inMode: .default, dequeue: true) {
+            window.sendEvent(up)
+        }
+        drain()
+    }
+
+    @MainActor static func sendEscape(in window: NSWindow) {
+        NSApp.sendEvent(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+            context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: 53)!)
+        drain()
+    }
+
+    @MainActor static func checkSettingsNavigation(_ host: NSHostingController<SettingsView>, in window: NSWindow) {
+        for (index, section) in SettingsSection.allCases.enumerated() {
+            // Sidebar geometry: 12 pt inset, header, 4 pt spacing,
+            // 30 pt rows. The icon/text gap is x=38...47 in the root view.
+            // Check text first to distinguish event delivery from hit testing.
+            for location in ["text", "gap", "trailing", "leading", "vertical"] {
+                host.rootView.state.section = section == .fans ? .about : .fans
+                drain()
+                let y = host.view.safeAreaInsets.top + CGFloat(75 + index * 34)
+                var point = NSPoint(x: 84, y: y)
+                switch location {
+                case "text": point.x = 60
+                case "gap": point.x = 42
+                case "trailing": point.x = 151
+                case "leading": point.x = 15
+                default: point.y += 13
+                }
+                if !host.view.isFlipped { point.y = host.view.bounds.height - point.y }
+                click(window.convertPoint(toScreen: host.view.convert(point, to: nil)), in: window)
+                check(host.rootView.state.section == section,
+                      "Settings tab \(section.rawValue) must respond to its \(location) area")
+            }
+        }
     }
 
     static func resources() -> (cpu: Double, memory: Double) {
@@ -57,7 +152,7 @@ enum RuntimeTests {
         let engine = Engine(monitor: mon, store: store)
         let activity = ActivityState()
         let resourceSampler = ResourceSampler(read: {
-            ResourceSnapshot(memory: CapacityUsage(used: 32 * 1_073_741_824, total: 64 * 1_073_741_824),
+            ResourceSnapshot(cpuPercent: 37, memory: CapacityUsage(used: 32 * 1_073_741_824, total: 64 * 1_073_741_824),
                              disk: CapacityUsage(used: 400e9, total: 1000e9), gpuPercent: 42)
         })
         let coordinator = SamplingCoordinator(monitor: mon, net: net, proc: proc, netProc: netProc,
@@ -147,24 +242,100 @@ enum RuntimeTests {
             weak var panelHost: NSView?
             weak var dashboardHost: NSView?
             weak var settingsHost: NSViewController?
+            weak var detailWindow: NSWindow?
+            weak var detailHost: NSView?
             autoreleasepool {
+                if iteration == 0 {
+                    activateApp()
+                }
                 status.openPanel()
                 check(status.panel?.isVisible == true, "Panel must reopen")
                 panelHost = status.panel?.contentView
                 dashboardHost = status.hosting
                 if iteration == 0, let host = status.hosting {
-                    drain(0.15)
+                    // Hold readings constant to isolate disclosure layout from
+                    // legitimate live metric updates and ring animations.
+                    mon.setSamplingInterval(nil)
+                    net.setSamplingInterval(nil)
+                    resourceSampler.setSamplingInterval(nil)
+                    drain(0.6)
                     snapshot(status.panel?.contentView, name: "resources")
-                    let height = status.panel!.frame.height
+                    let upperImage = upperPanelImage(status.panel!.contentView!)
+                    let mainFrame = status.panel!.frame
                     host.rootView.state.netExpanded = true
-                    drain(0.15)
-                    check(status.panel!.frame.height > height, "Expanded network must resize the panel")
-                    snapshot(status.panel?.contentView, name: "expanded")
-                    check(status.panel!.frame.minY >= (button.window?.screen?.visibleFrame.minY ?? 0),
-                          "Expanded panel must remain inside the visible screen")
+                    drain(0.1)
+                    check(status.networkPanel?.isVisible == true && netProc.enabled,
+                          "Expanded network must open its own window and start sampling")
+                    check(status.panel!.frame == mainFrame,
+                          "Opening network details must leave the complete dashboard frame unchanged")
+                    check(upperPanelImage(status.panel!.contentView!) == upperImage,
+                          "Opening network details must not move or resize dashboard content")
+                    check(status.networkPanel?.parent === status.panel,
+                          "Network details must belong to the dashboard window group")
+                    let detailFrame = status.networkPanel!.frame
+                    let expected = NetworkPanelLayout.frame(beside: mainFrame,
+                        contentSize: status.networkHosting!.frame.size,
+                        visible: status.panel!.screen!.visibleFrame)
+                    check(detailFrame == expected, "Network details must use the adjacent screen-bounded placement")
+                    snapshot(status.panel?.contentView, name: "network-dashboard")
+                    snapshot(status.networkPanel?.contentView, name: "network-details")
+
+                    netProc.suspended = true
+                    for count in [0, 1, 5, 2, 0] {
+                        netProc.top = (0..<count).map {
+                            NetProcUsage(name: "Long application name \($0)", rxBps: 1e9, txBps: 1e6)
+                        }
+                        drain()
+                        check(status.networkPanel!.frame == detailFrame && status.panel!.frame == mainFrame,
+                              "Sampling states and row counts must not resize either window")
+                        if count == 5 { snapshot(status.networkPanel?.contentView, name: "network-five-rows") }
+                    }
+                    store.config.appearance = .light
+                    drain()
+                    snapshot(status.panel?.contentView, name: "network-dashboard-light")
+                    snapshot(status.networkPanel?.contentView, name: "network-details-light")
+                    checkPanelSurface(status.panel!.contentView!)
+                    checkPanelSurface(status.networkPanel!.contentView!)
+                    store.config.appearance = .dark
+                    drain()
+                    checkPanelSurface(status.panel!.contentView!)
+                    checkPanelSurface(status.networkPanel!.contentView!)
+
+                    status.networkPanel!.makeKeyAndOrderFront(nil)
+                    drain()
+                    check(status.networkPanel?.isKeyWindow == true && status.panel?.isVisible == true,
+                          "Focusing network details must keep both windows open: active=\(NSApp.isActive), main=\(String(describing: status.panel)), detail=\(String(describing: status.networkPanel)), key=\(String(describing: NSApp.keyWindow))")
+                    status.panel!.makeKeyAndOrderFront(nil)
+                    drain()
+                    check(status.panel?.isKeyWindow == true && status.networkPanel?.isVisible == true,
+                          "Returning focus to the dashboard must keep network details open")
+
+                    // Use the detail window's real close button, then the main
+                    // row state. Both must collapse without changing the parent.
+                    click(NSPoint(x: detailFrame.maxX - 26, y: detailFrame.maxY - 29),
+                          in: status.networkPanel!)
+                    check(status.networkPanel == nil && !host.rootView.state.netExpanded && !netProc.enabled,
+                          "The detail close button must collapse and stop sampling")
+                    check(status.panel!.frame == mainFrame, "Detail close must preserve the dashboard frame")
+                    host.rootView.state.netExpanded = true
+                    drain()
                     host.rootView.state.netExpanded = false
-                    drain(0.15)
-                    check(abs(status.panel!.frame.height - height) < 1, "Collapsed panel must regain its height")
+                    check(status.networkPanel == nil && !netProc.enabled,
+                          "Collapsing the network row must immediately close its window and stop sampling")
+                    for _ in 0..<4 {
+                        host.rootView.state.netExpanded = true
+                        host.rootView.state.netExpanded = false
+                    }
+                    host.rootView.state.netExpanded = true
+                    drain(0.1)
+                    check(status.panel?.childWindows?.count == 1 && status.networkPanel?.isVisible == true,
+                          "Rapid toggles must leave exactly one detail window: active=\(NSApp.isActive) main=\(String(describing: status.panel)) detail=\(String(describing: status.networkPanel)) key=\(String(describing: NSApp.keyWindow))")
+                    sendEscape(in: status.networkPanel!)
+                    check(status.networkPanel == nil && status.panel?.isVisible == true,
+                          "Escape must dismiss details before the dashboard")
+                    check(status.panel!.frame == mainFrame,
+                          "All detail interactions must preserve the complete dashboard frame")
+                    netProc.suspended = false
                     let now = sampleTime()
                     for i in 0..<30 {
                         mon.socHistory.record(60 + 12 * sin(Double(i)/3), at: now-Double(29-i)*10, cadence: 10)
@@ -176,16 +347,39 @@ enum RuntimeTests {
                     store.config.topWidgetStyle = .ring
                     drain(0.1)
                 }
+                status.hosting!.rootView.state.netExpanded = true
+                drain()
+                detailWindow = status.networkPanel
+                detailHost = status.networkHosting
                 status.closePanel()
-                check(status.panel == nil && !netProc.enabled, "Dismissal must discard the panel and stop nettop")
+                check(status.panel == nil && status.networkPanel == nil && !netProc.enabled,
+                      "Dismissal must discard both panels and stop nettop")
                 settings.show()
+                drain()
+                if iteration == 0, let window = settings.window,
+                   let screen = NSScreen.screens.first(where: {
+                       $0.visibleFrame.width >= window.frame.width && $0.visibleFrame.height >= window.frame.height
+                   }) {
+                    // Keep the fixture on one screen. AppKit constrains a
+                    // restored window that originally straddled two displays.
+                    window.setFrameOrigin(NSPoint(x: floor(screen.visibleFrame.midX - window.frame.width / 2),
+                                                  y: floor(screen.visibleFrame.midY - window.frame.height / 2)))
+                    drain()
+                }
                 check(settings.window?.isVisible == true, "Settings must reopen")
                 if let previousSettingsFrame {
-                    check(settings.window?.frame == previousSettingsFrame, "Settings geometry must survive closing")
+                    check(settings.window?.frame == previousSettingsFrame,
+                          "Settings geometry must survive closing: previous=\(previousSettingsFrame), current=\(settings.window!.frame)")
                 }
                 settingsHost = settings.window?.contentViewController
                 if let host = settingsHost as? NSHostingController<SettingsView> {
-                    if iteration == 0 { host.rootView.state.section = .general }
+                    if iteration == 0 {
+                        drain()
+                        snapshot(host.view, name: "settings-navigation")
+                        checkSettingsNavigation(host, in: settings.window!)
+                        host.rootView.state.section = .general
+                        drain()
+                    }
                     check(host.rootView.state.section == .general, "Settings navigation must survive closing")
                 }
                 previousSettingsFrame = settings.window?.frame
@@ -195,6 +389,7 @@ enum RuntimeTests {
             drain(0.1)
             check(panelHost == nil && dashboardHost == nil, "Closed panel viewport or hosting tree is retained")
             check(settingsHost == nil, "Closed settings hosting controller is retained")
+            check(detailWindow == nil && detailHost == nil, "Closed network window or hosting tree is retained")
         }
 
         status.maximumPanelHeight = 300
@@ -207,9 +402,54 @@ enum RuntimeTests {
             scroll.contentView.scroll(to: NSPoint(x: 0, y: bottom))
             scroll.reflectScrolledClipView(scroll.contentView)
             check(abs(scroll.contentView.bounds.minY-bottom) < 1, "Overflow dashboard must scroll to its footer")
+            let frame = status.panel!.frame
+            status.hosting!.rootView.state.netExpanded = true
+            drain()
+            check(status.panel!.frame == frame && status.networkPanel?.isVisible == true,
+                  "Network details must not affect a capped dashboard")
+            check(abs(scroll.contentView.bounds.minY - bottom) < 1,
+                  "Network details must preserve the dashboard scroll position")
+            status.hosting!.rootView.state.netExpanded = false
         }
         status.closePanel()
         status.maximumPanelHeight = .greatestFiniteMagnitude
+
+        status.openPanel(); drain()
+        let closingState = status.hosting!.rootView.state
+        closingState.netExpanded = true
+        status.closePanel()
+        drain()
+        check(!closingState.netExpanded && status.networkPanel == nil && !netProc.enabled,
+              "Immediate dashboard dismissal must release details and stop sampling")
+        status.openPanel(); drain()
+        check(!status.hosting!.rootView.state.netExpanded && status.networkPanel == nil,
+              "Reopening must start with closed network details")
+        status.hosting!.rootView.state.netExpanded = true
+        drain()
+        store.config.showNetworkPanel = false
+        drain()
+        check(status.networkPanel == nil && !netProc.enabled && !status.hosting!.rootView.state.netExpanded,
+              "Disabling network display must close its detail window and stop sampling")
+        store.config.showNetworkPanel = true
+        drain()
+        status.hosting!.rootView.state.netExpanded = true
+        drain()
+        sendEscape(in: status.panel!)
+        sendEscape(in: status.panel!)
+        check(status.panel == nil && status.networkPanel == nil, "A second Escape must dismiss the dashboard")
+
+        status.openPanel(); drain()
+        status.hosting!.rootView.state.netExpanded = true
+        drain()
+        let outside = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 100, height: 100),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+        outside.isReleasedWhenClosed = false
+        activateApp()
+        outside.makeKeyAndOrderFront(nil)
+        drain(0.1)
+        check(status.panel == nil && status.networkPanel == nil && !netProc.enabled,
+              "Focusing an unrelated window must dismiss both panels and stop sampling: active=\(NSApp.isActive), outsideKey=\(outside.isKeyWindow), mainKey=\(status.panel?.isKeyWindow == true), detailKey=\(status.networkPanel?.isKeyWindow == true), key=\(String(describing: NSApp.keyWindow))")
+        outside.close()
 
         // Exercise real read-only nettop subprocesses, including callbacks from old sessions.
         var retired: [pid_t] = []
@@ -241,6 +481,6 @@ enum RuntimeTests {
         let after = resources()
         print(String(format: "Idle test process: %.2f%% CPU, %.1f MiB footprint (3-second sample)",
                      (after.cpu - before.cpu) / elapsed * 100, after.memory))
-        print("PASS: batched renders, unchanged/hidden label caching, presentation updates, stable row identity, panel resizing, 12 window release/reopen cycles, adaptive visibility, and live nettop cleanup")
+        print("PASS: batched renders, unchanged/hidden label caching, presentation updates, stable row identity, adjacent network panels, settings hit regions, 12 window release/reopen cycles, adaptive visibility, and live nettop cleanup")
     }
 }

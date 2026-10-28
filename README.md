@@ -22,16 +22,19 @@ power draw, and fan RPM at a glance. Unlike most monitors, it can **actually
 control the fans** on Apple Silicon Macs — with a temperature→speed curve and
 hardware-friendly, gradual ramping.
 
-The dashboard also shows network throughput, CPU process rankings, system memory,
-startup-disk capacity and GPU utilization (where the driver exposes it). Resource
-readings need no administrator permission and stop when the panel is hidden.
+The dashboard also shows network throughput and CPU process rankings. Its resource
+card shows CPU usage, memory, GPU utilization (where supported), and startup-disk
+capacity in that order. Resource readings need no administrator permission and
+stop when the panel is hidden.
+Click the network row for history and per-app rates in a compact adjacent panel;
+the dashboard keeps its size and position.
 
 Verified end-to-end on **M5 Pro (Mac17,8)**. Fan control works on Apple Silicon
 Macs whose firmware exposes writable fan keys (see [How fan control works](#how-fan-control-works)).
 
 ## Features
 
-- 💻 System memory, startup-disk used/total capacity, and GPU utilization
+- 💻 System CPU usage, memory, GPU utilization, and startup-disk used/total capacity
 - 📉 Smooth history charts that preserve sample values and real data gaps
 - 🔋 Default 10 / 3 / 10 s and Eco 30 / 10 / 30 s display sampling; opening a panel uses Default
 - 🌡 Menu-bar readout of the hottest SoC temperature + ring gauges
