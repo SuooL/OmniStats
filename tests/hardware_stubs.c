@@ -40,6 +40,7 @@ int cb_ctl_command(const char *command, char *reply, int capacity) {
     (void)command;
     if(!available || capacity < 2) return -1;
     snprintf(reply, (size_t)capacity, "OK backend=chte enabled=0 limit=80 sailing=5 sleepstop=0 stayawake=0 "
-             "topup=0 inhibited=0 percent=85 external=1 conflict=- writefailed=0");
+             "heat=0 heatlimit=40 led=0 topup=0 inhibited=0 heatheld=0 percent=85 external=1 charging=0 "
+             "temp=3050 ledsupported=1 conflict=- writefailed=0");
     return 0;
 }

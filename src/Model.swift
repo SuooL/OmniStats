@@ -172,7 +172,7 @@ final class Monitor: ObservableObject {
         control.poll { [weak self] available, version in
             guard let self else { return }
             if self.helperAvailable != available { self.helperAvailable = available }
-            let needsUpdate = available && version < 4
+            let needsUpdate = available && version < 5
             if self.helperNeedsUpdate != needsUpdate { self.helperNeedsUpdate = needsUpdate }
         }
     }
@@ -206,7 +206,7 @@ final class Monitor: ObservableObject {
         }
     }
     func revertAll() { command(.automatic) }
-    // Battery control is a protocol-4 feature; older helpers get the update prompt.
+    // Battery control needs protocol 5; older helpers get the update prompt.
     var helperSupportsBattery: Bool { helperAvailable && !helperNeedsUpdate }
     func helperRequest(_ command: String, completion: @escaping (String?) -> Void) {
         guard !busy, helperSupportsBattery else { completion(nil); return }

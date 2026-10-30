@@ -129,8 +129,9 @@ the real app or a long-running leak test.
 - The **helper** verifies the peer uid (plus the peer's code signature when the
   helper is certificate-signed), and a watchdog reverts to firmware auto if the
   app disconnects or hangs.
-- **Battery charge control** (protocol 4: `BSTATUS`, `BSET key=value…`,
-  `BTOPUP 0|1`) runs inside the helper on its own serial queue: a 10 s tick,
+- **Battery charge control** (protocol 5: `BSTATUS`, `BSET key=value…`,
+  `BTOPUP 0|1`; limit, sailing, sleep options, heat protection, MagSafe LED)
+  runs inside the helper on its own serial queue: a 10 s tick,
   sleep/wake notifications, and settings persisted root-owned under
   `/Library/Application Support/OmniStats`. Fan and battery SMC calls share
   one lock. The policy is a pure function (`batteryShouldInhibit`) covered by

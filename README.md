@@ -129,8 +129,13 @@ closed.
   27). On such a Mac the pane says so and points to macOS's own limit.
 - Options: pause charging before sleep, and stay out of idle sleep until the
   limit is reached. **Charge to full now** lifts the limit until you unplug.
-- Planned, not yet available: discharging while plugged in, calibration, heat
-  protection, MagSafe LED control and schedules.
+- **Heat protection** pauses charging while the battery is above a temperature
+  you choose (30–50 °C) and resumes 3 °C below it, even during a full charge.
+- **MagSafe LED**: leave it to macOS, show the charge state (orange while
+  charging, green otherwise), or turn it off. Choosing "System" again hands it
+  back to macOS.
+- Planned, not yet available: discharging while plugged in, calibration and
+  schedules.
 
 ## Hardware-friendly control
 

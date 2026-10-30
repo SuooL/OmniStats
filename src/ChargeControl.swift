@@ -7,6 +7,10 @@ struct ChargeControlStatus: Equatable {
     var settings: ChargeLimitSettings
     var topUp: Bool
     var inhibited: Bool
+    var heatHeld: Bool
+    var charging: Bool
+    var temperature: Double?   // °C
+    var ledSupported: Bool
     var conflict: String?
     var writeFailed: Bool
 
@@ -23,12 +27,19 @@ struct ChargeControlStatus: Equatable {
               let enabled = flag("enabled"), let limit = fields["limit"].flatMap({ Int($0) }),
               let sailing = fields["sailing"].flatMap({ Int($0) }),
               let sleepStop = flag("sleepstop"), let stayAwake = flag("stayawake"),
-              let topUp = flag("topup"), let inhibited = flag("inhibited"),
+              let heat = flag("heat"), let heatLimit = fields["heatlimit"].flatMap({ Int($0) }),
+              let led = fields["led"].flatMap({ Int($0) }).flatMap(ChargeLimitSettings.LedMode.init(rawValue:)),
+              let topUp = flag("topup"), let inhibited = flag("inhibited"), let heatHeld = flag("heatheld"),
+              let charging = flag("charging"), let temperature = fields["temp"].flatMap({ Int($0) }),
+              let ledSupported = flag("ledsupported"),
               let conflict = fields["conflict"], let writeFailed = flag("writefailed") else { return nil }
         self.backend = backend
         settings = ChargeLimitSettings(enabled: enabled, limit: limit, sailing: sailing,
-                                       sleepStop: sleepStop, stayAwake: stayAwake)
-        self.topUp = topUp; self.inhibited = inhibited; self.writeFailed = writeFailed
+                                       sleepStop: sleepStop, stayAwake: stayAwake,
+                                       heatProtect: heat, heatLimit: heatLimit, ledMode: led)
+        self.topUp = topUp; self.inhibited = inhibited; self.heatHeld = heatHeld; self.charging = charging
+        self.temperature = temperature > 0 ? Double(temperature) / 100 : nil
+        self.ledSupported = ledSupported; self.writeFailed = writeFailed
         self.conflict = conflict == "-" ? nil : conflict
     }
 }
@@ -40,13 +51,21 @@ struct ChargeLimitSettings: Equatable {
     var sailing: Int
     var sleepStop: Bool
     var stayAwake: Bool
+    var heatProtect: Bool
+    var heatLimit: Int         // °C
+    var ledMode: LedMode
+
+    // macOS keeps the MagSafe LED, OmniStats shows charging (orange) or not (green), or it stays off.
+    enum LedMode: Int, CaseIterable, Identifiable { case system, status, off; var id: Int { rawValue } }
 
     static let limitRange = 20...100
     static let sailingRange = 1...20
+    static let heatRange = 30...50
     var resumeAt: Int { max(0, limit - sailing) }
     var command: String {
         "BSET enabled=\(enabled ? 1 : 0) limit=\(limit) sailing=\(sailing) "
-            + "sleepstop=\(sleepStop ? 1 : 0) stayawake=\(stayAwake ? 1 : 0)"
+            + "sleepstop=\(sleepStop ? 1 : 0) stayawake=\(stayAwake ? 1 : 0) "
+            + "heat=\(heatProtect ? 1 : 0) heatlimit=\(heatLimit) led=\(ledMode.rawValue)"
     }
 }
 
