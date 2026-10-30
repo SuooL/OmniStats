@@ -178,14 +178,21 @@ int main(void) {
 
     // Adapter cut-off: discharge, auto-discharge, calibration.
     BatteryReading fullCharge={1,100,1,1,3000,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
-    assert(calibrationNext(CalCharge1,fullCharge,10,on)==CalHold1 && calibrationNext(CalCharge1,at50,10,on)==CalCharge1);
-    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on)==-1 && calibrationNext(CalCharge1,unplugged,1,on)==-1);
-    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on)==CalDischarge);
-    assert(calibrationNext(CalDischarge,at50,10,on)==CalDischarge && calibrationNext(CalDischarge,low,10,on)==CalCharge2);
-    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on)==-1);
-    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off)==CalIdle);
-    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on)==CalIdle);
-    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on)==CalDischarge);
+    assert(calibrationNext(CalCharge1,fullCharge,10,on,0)==CalHold1 && calibrationNext(CalCharge1,at50,10,on,0)==CalCharge1);
+    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on,0)==-1 && calibrationNext(CalCharge1,unplugged,1,on,0)==-1);
+    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on,0)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on,0)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,10,on,0)==CalDischarge && calibrationNext(CalDischarge,low,10,on,0)==CalCharge2);
+    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on,0)==-1);
+    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on,0)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off,0)==CalIdle);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on,0)==CalIdle);
+    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on,0)==CalDischarge);
+    // 99 % counts as full once the charger has finished, not while it tops off or heat holds it.
+    BatteryReading toppingOff={1,99,1,1,3000,1}, finished={1,99,1,0,3000,1}, cutAt99={1,99,0,0,3000,1};
+    assert(calibrationNext(CalCharge1,toppingOff,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,finished,10,on,0)==CalHold1);
+    assert(calibrationNext(CalCharge2,finished,10,on,0)==CalHold2 && calibrationNext(CalCharge1,finished,10,on,1)==CalCharge1);
+    assert(calibrationNext(CalCharge1,cutAt99,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,(BatteryReading){1,98,1,0,3000,1},10,on,0)==CalCharge1);
+    // A long top-off at 99 % moves on instead of failing the run.
+    assert(calibrationNext(CalCharge1,toppingOff,CAL_CHARGE_MAX_SEC+1,on,0)==CalHold1);
     BatteryConfig autoOn=on; autoOn.autoDischarge=1;
     assert(batteryDischargeTarget(on,at50,0,CalIdle)==0 && batteryDischargeTarget(on,at50,30,CalIdle)==30);
     assert(batteryDischargeTarget(autoOn,(BatteryReading){1,90,1,0,0,1},0,CalIdle)==80 && batteryDischargeTarget(autoOn,(BatteryReading){1,80,1,0,0,1},0,CalIdle)==0);

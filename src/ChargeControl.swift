@@ -18,6 +18,7 @@ struct ChargeControlStatus: Equatable {
     var calibration: Calibration
     var calibrationElapsed: TimeInterval
     var calibrationResult: Int    // 0 none, 1 finished, 2 stopped early
+    var percent: Int?             // the helper's last battery reading
     var conflict: String?
     var writeFailed: Bool
 
@@ -58,6 +59,7 @@ struct ChargeControlStatus: Equatable {
         dischargeTarget = discharge > 0 ? discharge : nil
         self.calibration = calibration; self.calibrationElapsed = TimeInterval(calibrationElapsed)
         self.calibrationResult = calibrationResult
+        percent = fields["percent"].flatMap { Int($0) }.flatMap { (1...100).contains($0) ? $0 : nil }
         self.conflict = conflict == "-" ? nil : conflict
     }
 }
