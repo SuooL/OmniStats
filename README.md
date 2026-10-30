@@ -149,7 +149,11 @@ closed.
   | `omnistats://battery/led?mode=status` (`system`, `off`) | MagSafe LED mode |
   | `omnistats://settings/battery` | Open the Battery pane |
 
-- Planned, not yet available: discharging while plugged in and calibration.
+- **Discharge & calibration** pause the power adapter (SMC `CHIE`) so a
+  plugged-in Mac runs from its battery: discharge to a chosen level, keep it
+  down at the limit automatically, or calibrate (full → hold 1 h → 15 % → full →
+  hold 1 h → back to the limit, usually 6–10 h). These are deliberately not
+  reachable from links or schedules.
 
 ## Menu bar icons
 
@@ -195,6 +199,11 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
   limit is turned off. It writes nothing while another charge manager (AlDente,
   batt, Battery Toolkit) is running, and never touches the charging keys unless
   you turn the limit on.
+- Pausing the adapter is the one control that could drain a plugged-in Mac, so
+  OmniStats restores it the moment you unplug (SMC `AC-W` tells a real unplug
+  from its own pause), before the Mac sleeps, when the target, a 10 % floor or
+  an 8-hour limit is reached, when the battery can't be read, when another
+  charge manager appears, and whenever the helper starts or stops.
 
 ## Updates
 

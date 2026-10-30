@@ -12,14 +12,16 @@ static int smcReadU8(const char *key) { return 2; }
 static int smcWriteU8(const char *key, unsigned char value) { modeWrites++; return value==0 && failAuto ? -1 : 0; }
 static int smcWriteFloat(const char *key, float value) { targetWrites++; targetRPM=value; return failTarget ? -1 : 0; }
 // In-memory charge-control keys: CHTE (current firmware) or CH0B/CH0C (older).
-static unsigned char chte[4], ch0b, ch0c, aclc=0x03;
-static int hasCHTE=1, hasCH0=0, hasACLC=1, failBatteryWrites, batteryWrites, ledWrites;
+static unsigned char chte[4], ch0b, ch0c, aclc=0x03, chie=0x00, acw=0x04;
+static int hasCHTE=1, hasCH0=0, hasACLC=1, hasCHIE=1, hasACW=1, failBatteryWrites, batteryWrites, ledWrites, adapterWrites;
 static int smcReadBytes(const char *key, unsigned char *buffer, unsigned int *size, unsigned int *type) {
     (void)type;
     if(!strcmp(key,"CHTE") && hasCHTE) { memcpy(buffer,chte,4); *size=4; return 4; }
     if(!strcmp(key,"CH0B") && hasCH0) { buffer[0]=ch0b; *size=1; return 1; }
     if(!strcmp(key,"CH0C") && hasCH0) { buffer[0]=ch0c; *size=1; return 1; }
     if(!strcmp(key,"ACLC") && hasACLC) { buffer[0]=aclc; *size=1; return 1; }
+    if(!strcmp(key,"CHIE") && hasCHIE) { buffer[0]=chie; *size=1; return 1; }
+    if(!strcmp(key,"AC-W") && hasACW) { buffer[0]=acw; *size=1; return 1; }
     return -1;
 }
 static int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned int size) {
@@ -29,6 +31,7 @@ static int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned i
     if(!strcmp(key,"CH0B") && hasCH0 && size==1) { ch0b=bytes[0]; return 0; }
     if(!strcmp(key,"CH0C") && hasCH0 && size==1) { ch0c=bytes[0]; return 0; }
     if(!strcmp(key,"ACLC") && hasACLC && size==1) { aclc=bytes[0]; ledWrites++; return 0; }
+    if(!strcmp(key,"CHIE") && hasCHIE && size==1) { chie=bytes[0]; adapterWrites++; return 0; }
     return -1;
 }
 #define COOLBAR_SMC_H
@@ -134,7 +137,7 @@ int main(void) {
     failBatteryWrites=0; batteryTick(); assert(gInhibited==1 && !gWriteFailed);
     testReading.valid=0; batteryTick(); assert(chte[0]==0); testReading.valid=1; batteryTick();
     gTopUp=1; batteryTick(); assert(chte[0]==0);
-    testReading.external=0; batteryTick(); assert(gTopUp==0);
+    acw=0xff; batteryTick(); assert(gTopUp==0); acw=0x04;
     testReading.external=1; batteryTick(); assert(chte[0]==1);
     testReading.percent=70; batteryTick(); assert(chte[0]==0);
     gBattery.stayAwake=1; assert(batteryKeepsAwake());
@@ -173,6 +176,68 @@ int main(void) {
     batteryRelease(); assert(aclc==0x00 && !gLedOwned);
     gBatteryStopping=0; gLedSupported=0; gBattery=on;
 
+    // Adapter cut-off: discharge, auto-discharge, calibration.
+    BatteryReading fullCharge={1,100,1,1,3000,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
+    assert(calibrationNext(CalCharge1,fullCharge,10,on)==CalHold1 && calibrationNext(CalCharge1,at50,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on)==-1 && calibrationNext(CalCharge1,unplugged,1,on)==-1);
+    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,10,on)==CalDischarge && calibrationNext(CalDischarge,low,10,on)==CalCharge2);
+    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on)==-1);
+    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off)==CalIdle);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on)==CalIdle);
+    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on)==CalDischarge);
+    BatteryConfig autoOn=on; autoOn.autoDischarge=1;
+    assert(batteryDischargeTarget(on,at50,0,CalIdle)==0 && batteryDischargeTarget(on,at50,30,CalIdle)==30);
+    assert(batteryDischargeTarget(autoOn,(BatteryReading){1,90,1,0,0,1},0,CalIdle)==80 && batteryDischargeTarget(autoOn,(BatteryReading){1,80,1,0,0,1},0,CalIdle)==0);
+    assert(batteryDischargeTarget(on,at50,30,CalCharge1)==0 && batteryDischargeTarget(on,at50,0,CalDischarge)==CAL_LOW);
+    assert(batteryWantsCut(at50,30) && !batteryWantsCut(at50,50) && !batteryWantsCut(unplugged,30));
+    assert(!batteryWantsCut((BatteryReading){0,50,1,0,0,1},30) && !batteryWantsCut(at50,5));
+
+    // A cut left over from a crash is restored at start, unless another manager may own it.
+    chie=0x08; assert(probeAdapter(1)==1 && chie==0x00);
+    chie=0x08; assert(probeAdapter(0)==0 && chie==0x08);
+    chie=0x00; hasACW=0; assert(probeAdapter(1)==0); hasACW=1;
+    gAdapterSupported=probeAdapter(1); assert(gAdapterSupported);
+
+    gBattery=on; gBattery.limit=100; gInhibited=0; gTopUp=0; gAdapterCut=0; adapterWrites=0;
+    testReading=(BatteryReading){1,60,1,0,3000,0};
+    gDischargeTarget=55; gDischargeDeadline=wallClock()+60;
+    batteryTick(); assert(chie==0x08 && gAdapterCut && batteryKeepsAwake());
+    batteryTick(); assert(adapterWrites==1);
+    testReading.percent=55; batteryTick(); assert(chie==0x00 && !gAdapterCut && gDischargeTarget==0);
+    testReading.percent=60; gDischargeTarget=50; gDischargeDeadline=wallClock()+60;
+    batteryTick(); assert(chie==0x08);
+    acw=0xff; batteryTick(); assert(chie==0x00 && gDischargeTarget==0); acw=0x04;
+    gDischargeTarget=50; gDischargeDeadline=wallClock()-1; batteryTick(); assert(chie==0x00 && gDischargeTarget==0);
+    gDischargeTarget=50; gDischargeDeadline=wallClock()+60; batteryTick(); assert(chie==0x08);
+    testReading.valid=0; batteryTick(); assert(chie==0x00); testReading.valid=1;
+    batteryTick(); assert(chie==0x08);
+    strlcpy(testConflict,"AlDente",sizeof(testConflict)); batteryTick(); assert(chie==0x00); testConflict[0]=0;
+    batteryTick(); assert(chie==0x08);
+    batteryWillSleep(); assert(chie==0x00);
+    batteryTick(); assert(chie==0x08);
+    int topUpPair[2]; char topUpReply[64]; assert(socketpair(AF_UNIX,SOCK_STREAM,0,topUpPair)==0);
+    gTopUp=0; command(topUpPair[0],topUpPair[1],"BTOPUP 1",topUpReply,sizeof(topUpReply));
+    assert(gTopUp && !gDischargeTarget && chie==0x00);
+    close(topUpPair[0]); close(topUpPair[1]);
+    gTopUp=0;
+    gDischargeTarget=50; batteryTick(); assert(chie==0x08);
+    strlcpy(testConflict,"AlDente",sizeof(testConflict)); batteryRelease(); assert(chie==0x00 && gBatteryStopping);
+    testConflict[0]=0; gBatteryStopping=0; gDischargeTarget=0;
+
+    // Auto-discharge holds a plugged-in Mac at the limit.
+    gBattery=autoOn; testReading.percent=90; batteryTick(); assert(chie==0x08);
+    testReading.percent=80; batteryTick(); assert(chie==0x00 && chte[0]==1);
+
+    // Calibration charges past the limit, then discharges to 15 %.
+    gBattery=on; gCalPhase=CalCharge1; gCalPhaseStart=wallClock(); testReading.percent=90;
+    batteryTick(); assert(chte[0]==0 && chie==0x00 && batteryKeepsAwake());
+    testReading.percent=100; batteryTick(); assert(gCalPhase==CalHold1);
+    gCalPhaseStart=wallClock()-CAL_HOLD_SEC; batteryTick(); assert(gCalPhase==CalDischarge && chie==0x08);
+    testReading.percent=15; batteryTick(); assert(gCalPhase==CalCharge2 && chie==0x00 && chte[0]==0);
+    acw=0xff; batteryTick(); assert(gCalPhase==CalIdle && gCalResult==2); acw=0x04;
+    gBattery=on; gCalResult=0; gAdapterSupported=0;
+
     char directory[]="/tmp/omnistats-battery-XXXXXX";
     assert(mkdtemp(directory));
     char configPath[256]; snprintf(configPath,sizeof(configPath),"%s/battery.plist",directory);
@@ -187,10 +252,24 @@ int main(void) {
     assert(gBattery.enabled==1 && gBattery.limit==70 && gBattery.sailing==3 && gBattery.heatLimit==40);
     command(pair[0],pair[1],"BSTATUS",reply,sizeof(reply));
     const char *expected="OK backend=chte enabled=1 limit=70 sailing=3 sleepstop=0 stayawake=0 heat=0 heatlimit=40 led=0 "
-                         "topup=0 inhibited=1 heatheld=0 percent=70 external=1 charging=0 temp=0 ledsupported=0 conflict=- writefailed=0\n";
+                         "topup=0 inhibited=1 heatheld=0 percent=70 external=1 charging=0 temp=0 ledsupported=0 adapter=0 cut=0 "
+                         "plugged=1 discharge=0 autodischarge=0 calibration=0 calelapsed=0 calresult=0 conflict=- writefailed=0\n";
     assert(!strcmp(reply,expected));
     command(pair[0],pair[1],"BTOPUP 1",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gTopUp==1);
     command(pair[0],pair[1],"BTOPUP 2",reply,sizeof(reply)); assert(!strcmp(reply,"ERR command\n"));
+    gTopUp=0;
+    command(pair[0],pair[1],"BDISCHARGE 50",reply,sizeof(reply)); assert(!strcmp(reply,"ERR unsupported\n"));
+    gAdapterSupported=1;
+    command(pair[0],pair[1],"BDISCHARGE 5",reply,sizeof(reply)); assert(!strcmp(reply,"ERR args\n"));
+    command(pair[0],pair[1],"BDISCHARGE 96",reply,sizeof(reply)); assert(!strcmp(reply,"ERR args\n"));
+    command(pair[0],pair[1],"BDISCHARGE 50 x",reply,sizeof(reply)); assert(!strcmp(reply,"ERR command\n"));
+    command(pair[0],pair[1],"BDISCHARGE 50",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gDischargeTarget==50 && chie==0x08);
+    command(pair[0],pair[1],"BDISCHARGE 0",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && !gDischargeTarget && chie==0x00);
+    acw=0xff; command(pair[0],pair[1],"BCALIBRATE 1",reply,sizeof(reply)); assert(!strcmp(reply,"ERR unplugged\n")); acw=0x04;
+    command(pair[0],pair[1],"BCALIBRATE 1",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gCalPhase==CalCharge1);
+    gCalPhase=CalIdle; loadBatteryConfig(); assert(gCalPhase==CalCharge1 && gCalPhaseStart>0);
+    command(pair[0],pair[1],"BCALIBRATE 0",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gCalPhase==CalIdle && gCalResult==2);
+    gAdapterSupported=0; gCalResult=0;
     FILE *corrupt=fopen(configPath,"w"); fputs("<plist><dict><key>limit</key><integer>5</integer></dict></plist>",corrupt); fclose(corrupt);
     loadBatteryConfig(); assert(memcmp(&gBattery,&kBatteryDefaults,sizeof(gBattery))==0);
     gBatteryConfigPath="/System/omnistats-battery.plist";
