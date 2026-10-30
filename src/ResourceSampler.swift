@@ -61,9 +61,12 @@ final class ResourceReader {
 
     func sample() -> ResourceSnapshot {
         let counters = cpuCounters()
-        let warmingUp = counters != nil && cpuUsage.needsBaseline
-        return ResourceSnapshot(cpuPercent: cpuUsage.consume(counters), memory: memoryUsage(),
-                                disk: diskUsage(), gpuPercent: gpuUsage(), cpuWarmingUp: warmingUp)
+        let percent = cpuUsage.consume(counters)
+        // Apple Silicon tick counters can stall for up to about a second, so a
+        // short follow-up may land in an empty interval. Readable counters
+        // without a value yet mean "still warming up", not "unavailable".
+        return ResourceSnapshot(cpuPercent: percent, memory: memoryUsage(), disk: diskUsage(),
+                                gpuPercent: gpuUsage(), cpuWarmingUp: counters != nil && percent == nil)
     }
     func resetCPU() { cpuUsage = SystemCPUUsage() }
 
@@ -133,6 +136,9 @@ final class ResourceSampler: ObservableObject {
     private let reset: () -> Void
     private var timer: Timer?
     private var inFlight = false
+    private var warmups = 0
+    // 10 × 0.2 s outlasts the ~1 s counter stalls measured on Apple Silicon.
+    static let maximumWarmups = 10
     private var generation = 0
     private(set) var samplingInterval: TimeInterval?
 
@@ -150,7 +156,7 @@ final class ResourceSampler: ObservableObject {
     func setSamplingInterval(_ interval: TimeInterval?) {
         guard interval != samplingInterval else { return }
         let wasPaused = samplingInterval == nil
-        samplingInterval = interval; generation += 1
+        samplingInterval = interval; generation += 1; warmups = 0
         timer?.invalidate(); timer = nil
         if interval == nil || wasPaused {
             queue.async { [reset] in reset() }
@@ -177,9 +183,12 @@ final class ResourceSampler: ObservableObject {
                 }
                 if self.snapshot != value { self.snapshot = value }
                 if !self.hasSample { self.hasSample = true }
-                if value.cpuWarmingUp {
-                    // One short follow-up primes CPU without waiting 10 s or
-                    // keeping a fast timer alive while the panel is hidden.
+                if !value.cpuWarmingUp { self.warmups = 0 }
+                if value.cpuWarmingUp, self.warmups < Self.maximumWarmups {
+                    // Short follow-ups prime CPU without waiting 10 s or keeping a
+                    // fast timer alive while the panel is hidden. Bounded so a
+                    // counter that never advances cannot poll forever.
+                    self.warmups += 1
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                         guard let self, self.generation == current else { return }
                         self.refresh()
