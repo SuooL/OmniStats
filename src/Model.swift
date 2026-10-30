@@ -56,6 +56,7 @@ enum HelperInstaller {
         let cmd = [
             "(launchctl unload '\(plistDst)' 2>/dev/null || true)",
             "rm -f '\(plistDst)' '\(binDst)' /var/run/omnistats.sock",
+            "rm -rf '/Library/Application Support/OmniStats'",
         ].joined(separator: " && ")
         return runPrivileged(cmd)
     }
@@ -171,7 +172,7 @@ final class Monitor: ObservableObject {
         control.poll { [weak self] available, version in
             guard let self else { return }
             if self.helperAvailable != available { self.helperAvailable = available }
-            let needsUpdate = available && version < 3
+            let needsUpdate = available && version < 4
             if self.helperNeedsUpdate != needsUpdate { self.helperNeedsUpdate = needsUpdate }
         }
     }
@@ -205,6 +206,12 @@ final class Monitor: ObservableObject {
         }
     }
     func revertAll() { command(.automatic) }
+    // Battery control is a protocol-4 feature; older helpers get the update prompt.
+    var helperSupportsBattery: Bool { helperAvailable && !helperNeedsUpdate }
+    func helperRequest(_ command: String, completion: @escaping (String?) -> Void) {
+        guard !busy, helperSupportsBattery else { completion(nil); return }
+        control.request(command, completion: completion)
+    }
     func shutdown() { timer?.invalidate(); control.shutdown() }
 
     func enableControl(_ done: (() -> Void)? = nil) {

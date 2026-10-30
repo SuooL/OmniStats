@@ -28,6 +28,7 @@ struct SettingsView: View {
     let engine: Engine
     let updater: Updater
     let battery: BatterySampler
+    let charge: ChargeController
     @ObservedObject var state: SettingsState
 
     // Desktop Macs have no battery pane.
@@ -81,7 +82,7 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
-        case .battery: BatteryPane(sampler: battery, store: store)
+        case .battery: BatteryPane(sampler: battery, store: store, mon: mon, charge: charge)
         case .general: GeneralPane(store: store, hasBattery: battery.isPresent)
         case .about:   AboutPane(mon: mon, store: store, updater: updater)
         }

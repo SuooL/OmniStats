@@ -11,5 +11,6 @@ int  cb_ctl_heartbeat(void);        // 0 on success; keep watchdog alive in manu
 int  cb_ctl_version(void);          // protocol version; 0 for legacy/unknown helpers
 void cb_ctl_disconnect(void);       // drop connection and cached helper version
 uint64_t cb_ctl_connection_id(void); // changes on every successful connection
+int  cb_ctl_command(const char *command, char *reply, int capacity); // one-line request without '\n'; 0 on success
 
 #endif

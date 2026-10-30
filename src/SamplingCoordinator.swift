@@ -11,16 +11,17 @@ final class SamplingCoordinator {
     private let engine: Engine, store: ConfigStore, activity: ActivityState
     private let resources: ResourceSampler?
     private let battery: BatterySampler?
+    private let charge: ChargeController?
     private var bag = Set<AnyCancellable>()
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var displayAsleep = false, systemAsleep = false, sessionInactive = false
 
     init(monitor: Monitor, net: NetSampler, proc: ProcSampler, netProc: NetProcSampler,
          engine: Engine, store: ConfigStore, activity: ActivityState, resources: ResourceSampler? = nil,
-         battery: BatterySampler? = nil) {
+         battery: BatterySampler? = nil, charge: ChargeController? = nil) {
         self.monitor = monitor; self.net = net; self.proc = proc; self.netProc = netProc
         self.engine = engine; self.store = store; self.activity = activity; self.resources = resources
-        self.battery = battery
+        self.battery = battery; self.charge = charge
         Publishers.Merge(store.objectWillChange, activity.objectWillChange)
             .receive(on: RunLoop.main).sink { [weak self] _ in self?.apply() }.store(in: &bag)
         let workspace = NSWorkspace.shared.notificationCenter
@@ -52,8 +53,11 @@ final class SamplingCoordinator {
         resources?.setSamplingInterval(activity.panelVisible && awake ? 10 : nil)
         // Battery readings are display-only: Settings gets a faster cadence, a
         // panel without the battery section none at all.
-        battery?.setSamplingInterval(!awake ? nil : activity.settingsVisible ? 5
-            : activity.panelVisible && store.config.showBatteryPanel ? 10 : nil)
+        let batteryCadence: TimeInterval? = !awake ? nil : activity.settingsVisible ? 5
+            : activity.panelVisible && store.config.showBatteryPanel ? 10 : nil
+        battery?.setSamplingInterval(batteryCadence)
+        // The helper enforces the limit on its own; the app only polls to display it.
+        charge?.setPollingInterval(battery?.isPresent == true ? batteryCadence : nil)
         netProc.suspended = displayAsleep || sessionInactive || systemAsleep
         engine.setSuspended(systemAsleep)
     }

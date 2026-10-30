@@ -136,7 +136,7 @@ test: $(BUILD)/sensors.o $(BUILD)/control.o
 
 # AppKit regression checks with simulated sensors; requires a logged-in desktop.
 $(BUILD)/hardware_stubs.o: tests/hardware_stubs.c tests/hardware_stubs.h $(SRC)/sensors.h $(SRC)/control.h | $(BUILD)
-	$(CLANG) -I $(SRC) -c $< -o $@
+	$(CLANG) -mmacosx-version-min=13.0 -I $(SRC) -c $< -o $@
 
 $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift $(BUILD)/hardware_stubs.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
 	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
@@ -154,7 +154,7 @@ $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) test
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
 
 $(BUILD)/helper-safety-tests: tests/helper_safety_tests.m $(SRC)/smcd.m | $(BUILD)
-	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -framework Security -o $@
+	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -framework IOKit -framework Security -o $@
 
 $(BUILD)/control-transport-tests: tests/control_transport_tests.m $(SRC)/control.m $(SRC)/control.h | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) tests/control_transport_tests.m -framework Foundation -o $@

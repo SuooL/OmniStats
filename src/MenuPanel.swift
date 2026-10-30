@@ -42,6 +42,7 @@ struct MenuPanel: View {
     @ObservedObject var proc: ProcSampler
     let resources: ResourceSampler
     let battery: BatterySampler
+    let charge: ChargeController
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
     @ObservedObject var state: PanelState
@@ -77,7 +78,7 @@ struct MenuPanel: View {
 
             if store.config.showBatteryPanel && battery.isPresent {
                 divider
-                BatteryPanelSection(sampler: battery)
+                BatteryPanelSection(sampler: battery, charge: charge)
             }
 
             if mon.fanCount > 0 {
