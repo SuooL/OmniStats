@@ -1,13 +1,14 @@
 import SwiftUI
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case fans, battery, general, about
+    case fans, battery, menuBar, general, about
     var id: String { rawValue }
     var title: String { L.t("section.\(rawValue)") }
     var icon: String {
         switch self {
         case .fans:    return "fanblades.fill"
         case .battery: return "battery.100percent.bolt"
+        case .menuBar: return "menubar.rectangle"
         case .general: return "gearshape.fill"
         case .about:   return "info.circle.fill"
         }
@@ -29,10 +30,13 @@ struct SettingsView: View {
     let updater: Updater
     let battery: BatterySampler
     let charge: ChargeController
+    let menuBar: MenuBarManager?
     @ObservedObject var state: SettingsState
 
     // Desktop Macs have no battery pane.
-    var sections: [SettingsSection] { SettingsSection.allCases.filter { $0 != .battery || battery.isPresent } }
+    var sections: [SettingsSection] {
+        SettingsSection.allCases.filter { ($0 != .battery || battery.isPresent) && ($0 != .menuBar || menuBar != nil) }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -83,6 +87,7 @@ struct SettingsView: View {
         switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
         case .battery: BatteryPane(sampler: battery, store: store, mon: mon, charge: charge)
+        case .menuBar: if let menuBar { MenuBarPane(store: store, manager: menuBar) }
         case .general: GeneralPane(store: store, hasBattery: battery.isPresent)
         case .about:   AboutPane(mon: mon, store: store, updater: updater)
         }

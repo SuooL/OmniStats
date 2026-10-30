@@ -25,6 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
     private var settingsController: SettingsWindowController?
     private var scheduleRunner: ChargeScheduleRunner?
+    // Called on the main thread, where the menu-bar manager lives.
+    lazy var menuBar = MenuBarManager(store: store) { [weak self] in
+        MainActor.assumeIsolated {
+            guard let window = self?.statusController?.statusItem.button?.window, let screen = window.screen else { return nil }
+            return screen.frame.maxX - window.frame.minX
+        }
+    }
     private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -33,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = engine   // start the control loop
 
         let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
-                                                activity: activity, battery: battery, charge: charge)
+                                                activity: activity, battery: battery, charge: charge, menuBar: menuBar)
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
@@ -41,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onOpenSettings: { settings.show() })
         _ = sampling
         scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
+        _ = menuBar   // after OmniStats' own icon, which anchors the menu-bar controls
 
         // Delivered on the main queue, so the main-actor-isolated window work is
         // safe to run synchronously.
