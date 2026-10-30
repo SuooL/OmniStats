@@ -189,7 +189,7 @@ private struct LogRateGrid: View {
                     let y = H - CGFloat(normalize(v, yRange, .log)) * H
                     var g = Path(); g.move(to: CGPoint(x: 0, y: y)); g.addLine(to: CGPoint(x: W, y: y))
                     ctx.stroke(g, with: .color(Theme.line.opacity(0.45)), lineWidth: 0.5)
-                    let text = Text(axisRate(v)).font(.system(size: 8)).foregroundStyle(Theme.ink3)
+                    let text = Text(axisRate(v)).font(.system(size: 8)).foregroundColor(Theme.ink3)  // Text-returning on macOS 13
                     ctx.draw(text, at: CGPoint(x: 3, y: y - 1), anchor: .bottomLeading)
                 }
                 v *= 8

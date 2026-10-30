@@ -4,6 +4,7 @@
 #include "hardware_stubs.h"
 #include <stdatomic.h>
 #include <unistd.h>
+#include <stdio.h>
 static atomic_int available, failure, delay, sets, heartbeats, autos;
 static atomic_uint_fast64_t connection = 1;
 void cb_test_reset(void) { available=0; failure=0; delay=0; sets=0; heartbeats=0; autos=0; connection=1; }
@@ -35,3 +36,12 @@ int cb_ctl_heartbeat(void) { heartbeats++; return available && !failure ? 0 : -1
 int cb_ctl_version(void) { return 2; }
 void cb_ctl_disconnect(void) { connection++; }
 uint64_t cb_ctl_connection_id(void) { return connection; }
+int cb_ctl_command(const char *command, char *reply, int capacity) {
+    (void)command;
+    if(!available || capacity < 2) return -1;
+    snprintf(reply, (size_t)capacity, "OK backend=chte enabled=0 limit=80 sailing=5 sleepstop=0 stayawake=0 "
+             "heat=0 heatlimit=40 led=0 topup=0 inhibited=0 heatheld=0 percent=85 external=1 charging=0 "
+             "temp=3050 ledsupported=1 adapter=1 cut=0 plugged=1 discharge=0 autodischarge=0 calibration=0 "
+             "calelapsed=0 calresult=0 conflict=- writefailed=0");
+    return 0;
+}

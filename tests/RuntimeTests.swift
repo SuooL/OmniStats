@@ -97,7 +97,7 @@ enum RuntimeTests {
     }
 
     @MainActor static func checkSettingsNavigation(_ host: NSHostingController<SettingsView>, in window: NSWindow) {
-        for (index, section) in SettingsSection.allCases.enumerated() {
+        for (index, section) in host.rootView.sections.enumerated() {
             // Sidebar geometry: 12 pt inset, header, 4 pt spacing,
             // 30 pt rows. The icon/text gap is x=38...47 in the root view.
             // Check text first to distinguish event delivery from hit testing.
@@ -155,11 +155,18 @@ enum RuntimeTests {
             ResourceSnapshot(cpuPercent: 37, memory: CapacityUsage(used: 32 * 1_073_741_824, total: 64 * 1_073_741_824),
                              disk: CapacityUsage(used: 400e9, total: 1000e9), gpuPercent: 42)
         })
+        let batterySampler = BatterySampler(isPresent: true, read: {
+            BatterySnapshot(registry: ["ExternalConnected": true, "IsCharging": false, "CurrentCapacity": 85, "MaxCapacity": 100,
+                                       "Voltage": 12480, "Amperage": 0,
+                                       "PowerTelemetryData": ["SystemPowerIn": 35000, "SystemLoad": 35000]])
+        })
         let coordinator = SamplingCoordinator(monitor: mon, net: net, proc: proc, netProc: netProc,
-                                             engine: engine, store: store, activity: activity, resources: resourceSampler)
+                                             engine: engine, store: store, activity: activity, resources: resourceSampler,
+                                             battery: batterySampler)
         defer { withExtendedLifetime(coordinator) {} }
         let status = StatusItemController(mon: mon, store: store, engine: engine,
-            net: net, proc: proc, netProc: netProc, activity: activity, resources: resourceSampler, onOpenSettings: {})
+            net: net, proc: proc, netProc: netProc, activity: activity, resources: resourceSampler,
+            battery: batterySampler, onOpenSettings: {})
         check(status.panel == nil, "Startup must not construct the hidden panel")
         check(!proc.enabled, "Process sampling preferences must apply before opening a panel")
         drain()
@@ -174,8 +181,16 @@ enum RuntimeTests {
         activity.panelVisible = true; drain()
         check(mon.samplingInterval == 10 && net.samplingInterval == 3, "Visible panel must use default sampling")
         check(resourceSampler.samplingInterval == 10 && resourceSampler.hasSample, "Visible panel must collect resources")
+        check(batterySampler.samplingInterval == 10 && batterySampler.hasSample, "Visible panel must collect battery readings")
+        store.config.showBatteryPanel = false; drain()
+        check(batterySampler.samplingInterval == nil, "A panel without the battery section must not read the battery")
+        store.config.showBatteryPanel = true
+        activity.settingsVisible = true; drain()
+        check(batterySampler.samplingInterval == 5, "Settings uses the faster battery cadence")
+        activity.settingsVisible = false
         activity.panelVisible = false; drain()
         check(resourceSampler.samplingInterval == nil, "Hidden panel must stop resource sampling")
+        check(batterySampler.samplingInterval == nil, "Hidden panel and settings must stop battery sampling")
         check(mon.samplingInterval == backgroundCadence, "Hidden panel must restore background cadence")
         // Cadence transitions can invalidate the asynchronous startup sample.
         // Establish real baseline content before asserting an unchanged render,
@@ -234,7 +249,7 @@ enum RuntimeTests {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
         let settings = SettingsWindowController(mon: mon, store: store, engine: engine,
-            updater: Updater(updater: updaterController.updater), activity: activity)
+            updater: Updater(updater: updaterController.updater), activity: activity, battery: batterySampler)
         var previousSettingsFrame: NSRect?
 
         // Warm up framework caches before measuring repeated window lifetimes.

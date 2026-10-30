@@ -88,6 +88,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let onOpenSettings: @MainActor () -> Void
     private let activity: ActivityState
     private let resources: ResourceSampler
+    private let battery: BatterySampler
+    private let charge: ChargeController
 
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelState = PanelState()
@@ -115,11 +117,13 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     init(mon: Monitor, store: ConfigStore, engine: Engine, net: NetSampler,
          proc: ProcSampler, netProc: NetProcSampler, activity: ActivityState = ActivityState(),
          resources: ResourceSampler = ResourceSampler(),
+         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil,
          onOpenSettings: @MainActor @escaping () -> Void) {
         self.mon = mon; self.store = store; self.engine = engine
         self.net = net; self.proc = proc; self.netProc = netProc
         self.onOpenSettings = onOpenSettings
-        self.activity = activity; self.resources = resources
+        self.activity = activity; self.resources = resources; self.battery = battery
+        self.charge = charge ?? ChargeController(monitor: mon)
         super.init()
 
         if let button = statusItem.button {
@@ -231,7 +235,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // MARK: panel lifecycle
     private func buildPanel() {
         let root = MenuPanel(mon: mon, store: store, engine: engine, net: net, proc: proc,
-                             resources: resources, state: panelState,
+                             resources: resources, battery: battery, charge: charge, state: panelState,
                              onOpenSettings: { [weak self] in
                                  self?.closePanel()
                                  self?.onOpenSettings()
@@ -480,19 +484,31 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let engine: Engine
     private let updater: Updater
     private let activity: ActivityState
+    private let battery: BatterySampler
+    private let charge: ChargeController
+    private let menuBar: MenuBarManager?
+    private let uninstaller: AppUninstaller?
     private let settingsState = SettingsState()
     private var savedFrame: NSRect?
     private(set) var window: NSWindow?
 
-    init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater, activity: ActivityState = ActivityState()) {
+    init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater, activity: ActivityState = ActivityState(),
+         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil, menuBar: MenuBarManager? = nil,
+         uninstaller: AppUninstaller? = nil) {
         self.mon = mon; self.store = store; self.engine = engine; self.updater = updater
-        self.activity = activity
+        self.activity = activity; self.battery = battery
+        self.charge = charge ?? ChargeController(monitor: mon)
+        self.menuBar = menuBar
+        self.uninstaller = uninstaller
     }
 
-    func show() {
+    func show(section: SettingsSection? = nil) {
+        if let section { settingsState.section = section }
         if window == nil {
             let host = NSHostingController(
-                rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater, state: settingsState))
+                rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater,
+                                       battery: battery, charge: charge, menuBar: menuBar, uninstaller: uninstaller,
+                                       state: settingsState))
             let w = NSWindow(contentViewController: host)
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.title = L.t("settings.window")

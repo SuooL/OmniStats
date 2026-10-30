@@ -99,6 +99,13 @@ enum Theme {
         return gradient(c)
     }
 
+    // Battery charge on the same gradient, reversed: full reads cool, empty hot.
+    static func charge(_ percent: Double) -> Color {
+        if percent.isNaN { return ink3 }
+        let s = stops
+        return gradient(s.last!.0 - max(0, min(100, percent)) / 100 * (s.last!.0 - s.first!.0))
+    }
+
     // Network-rate color, same thermal gradient as temperature. Maps bytes/sec
     // onto the gradient's 0–100 key via a log scale: ~1 KB/s → cool (green),
     // ~100 MB/s → hot (red), so slow traffic reads calm and bursts read hot.

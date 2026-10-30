@@ -4,6 +4,7 @@
 APP        := OmniStats
 HELPER     := omnistats-smcd
 NETTOP     := omnistats-nettop
+CLEANER    := omnistats-cleaner
 BUILD      := build
 DIST       := dist
 SRC        := src
@@ -13,6 +14,16 @@ SWIFTC     := swiftc
 OBJC_FLAGS := -fobjc-arc -mmacosx-version-min=13.0
 C_FRAMEWORKS := -framework Foundation -framework IOKit -framework CoreFoundation
 SWIFT_FRAMEWORKS := -framework Cocoa -framework IOKit -framework CoreFoundation
+# Without an explicit target, swiftc builds for the host OS (e.g. macOS 26), and
+# the binary then refuses to launch on older systems despite LSMinimumSystemVersion.
+SWIFT_TARGET := -target arm64-apple-macos13.0
+
+# Code signing. The default "-" signs ad-hoc, which is fine for development and
+# CI, but macOS ties privacy grants to that exact build. Releases sign with one
+# fixed certificate so grants and the helper's client check survive updates:
+#   make dmg SIGN_ID="OmniStats Release"     (see CONTRIBUTING → Release signing)
+SIGN_ID    ?= -
+CODESIGN   := codesign --force --sign "$(SIGN_ID)" --timestamp=none
 
 # --- Sparkle auto-update framework (fetched at build, not committed) ---
 # Pinned version + checksum; the tarball also carries the bin/ tools (generate_appcast,
@@ -51,7 +62,7 @@ sparkle: $(SPARKLE_FW)
 # --- SwiftUI menu-bar app binary ---
 SWIFT_SRCS := $(wildcard $(SRC)/*.swift)
 $(BUILD)/$(APP): $(SWIFT_SRCS) $(BUILD)/sensors.o $(BUILD)/control.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(SWIFT_SRCS) \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(SWIFT_SRCS) \
 	  $(BUILD)/sensors.o $(BUILD)/control.o \
 	  -import-objc-header $(SRC)/bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle \
@@ -62,7 +73,7 @@ app: $(BUILD)/$(APP)
 
 # --- Privileged helper daemon ---
 $(BUILD)/$(HELPER): $(SRC)/smcd.m $(SRC)/smc.h | $(BUILD)
-	$(CLANG) $(OBJC_FLAGS) $(SRC)/smcd.m -framework Foundation -framework IOKit -o $@
+	$(CLANG) $(OBJC_FLAGS) $(SRC)/smcd.m -framework Foundation -framework IOKit -framework Security -o $@
 
 helper: $(BUILD)/$(HELPER)
 
@@ -70,24 +81,33 @@ helper: $(BUILD)/$(HELPER)
 $(BUILD)/$(NETTOP): $(SRC)/nettop-runner.c | $(BUILD)
 	$(CLANG) -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 $< -o $@
 
-# --- .app bundle (ad-hoc signed) ---
+# One-shot, administrator-authorized mover for an uninstalled app's system files.
+$(BUILD)/$(CLEANER): $(SRC)/cleaner.c | $(BUILD)
+	$(CLANG) -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 $< -o $@
+
+# --- .app bundle (signed with SIGN_ID; ad-hoc by default) ---
 # The privileged helper + LaunchDaemon plist are embedded in Contents/Resources so
 # the app can self-install them via a single native admin prompt (no Terminal needed).
-bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
+# The helper must carry the same certificate as the app: it derives its client
+# check from its own signature.
+bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(BUILD)/$(CLEANER) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
 	@rm -rf $(DIST)/$(APP).app
 	@mkdir -p $(DIST)/$(APP).app/Contents/MacOS $(DIST)/$(APP).app/Contents/Resources $(DIST)/$(APP).app/Contents/Frameworks
 	@cp packaging/Info.plist $(DIST)/$(APP).app/Contents/Info.plist
 	@cp $(BUILD)/$(APP) $(DIST)/$(APP).app/Contents/MacOS/$(APP)
 	@cp $(BUILD)/$(HELPER) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
+	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
 	@cp $(BUILD)/$(NETTOP) $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
-	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
+	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
+	@cp $(BUILD)/$(CLEANER) $(DIST)/$(APP).app/Contents/Resources/$(CLEANER)
+	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(CLEANER)
 	@cp packaging/com.omnistats.smcd.plist $(DIST)/$(APP).app/Contents/Resources/com.omnistats.smcd.plist
 	@[ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns $(DIST)/$(APP).app/Contents/Resources/AppIcon.icns || echo "warn: icons/AppIcon.icns missing (run tools/gen-icon.sh)"
 	@# Embed Sparkle (ditto preserves the framework's symlinks + its existing signature).
 	@ditto $(SPARKLE_FW) $(DIST)/$(APP).app/Contents/Frameworks/Sparkle.framework
-	@# Ad-hoc sign only the outer app; Sparkle keeps its own signature (no hardened
-	@# runtime here, so a differently-signed framework still loads).
-	@codesign --force --sign - --timestamp=none $(DIST)/$(APP).app
+	@# Sign the outer app; Sparkle keeps its own signature (no hardened runtime
+	@# here, so a differently-signed framework still loads).
+	@$(CODESIGN) $(DIST)/$(APP).app
 	@codesign --verify --deep --strict $(DIST)/$(APP).app
 	@echo "Built $(DIST)/$(APP).app"
 
@@ -123,10 +143,10 @@ test: $(BUILD)/sensors.o $(BUILD)/control.o
 
 # AppKit regression checks with simulated sensors; requires a logged-in desktop.
 $(BUILD)/hardware_stubs.o: tests/hardware_stubs.c tests/hardware_stubs.h $(SRC)/sensors.h $(SRC)/control.h | $(BUILD)
-	$(CLANG) -I $(SRC) -c $< -o $@
+	$(CLANG) -mmacosx-version-min=13.0 -I $(SRC) -c $< -o $@
 
 $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift $(BUILD)/hardware_stubs.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
 	  $(BUILD)/hardware_stubs.o -import-objc-header $(SRC)/bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
@@ -135,21 +155,25 @@ test-runtime: $(BUILD)/runtime-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/runtime-tests
 
 $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift tests/test_bridge.h tests/hardware_stubs.h $(BUILD)/hardware_stubs.o $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \
 	  $(BUILD)/hardware_stubs.o -import-objc-header tests/test_bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
 
 $(BUILD)/helper-safety-tests: tests/helper_safety_tests.m $(SRC)/smcd.m | $(BUILD)
-	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -o $@
+	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -framework IOKit -framework Security -o $@
+
+$(BUILD)/cleaner-tests: tests/cleaner_tests.c $(SRC)/cleaner.c | $(BUILD)
+	$(CLANG) -Wall -Wextra -mmacosx-version-min=13.0 tests/cleaner_tests.c -o $@
 
 $(BUILD)/control-transport-tests: tests/control_transport_tests.m $(SRC)/control.m $(SRC)/control.h | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) tests/control_transport_tests.m -framework Foundation -o $@
 
-test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests $(BUILD)/$(NETTOP)
+test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests $(BUILD)/cleaner-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/logic-tests
 	@$(BUILD)/helper-safety-tests
 	@$(BUILD)/control-transport-tests
+	@$(BUILD)/cleaner-tests
 	@python3 tests/nettop_lifecycle_tests.py $(BUILD)/$(NETTOP)
 
 clean:

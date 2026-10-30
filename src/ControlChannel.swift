@@ -45,6 +45,16 @@ final class ControlChannel {
             }
         }
     }
+    // One-line commands (battery control). They share the socket queue, so they
+    // never interleave with a fan command batch.
+    func request(_ command: String, completion: @escaping (String?) -> Void) {
+        queue.async {
+            var reply = [CChar](repeating: 0, count: 512)
+            let ok = cb_ctl_command(command, &reply, Int32(reply.count)) == 0
+            let text = ok ? String(cString: reply) : nil
+            DispatchQueue.main.async { completion(text) }
+        }
+    }
     func disconnect(completion: @escaping () -> Void) {
         pending = nil
         queue.async { [worker] in

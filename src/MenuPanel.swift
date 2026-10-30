@@ -41,6 +41,8 @@ struct MenuPanel: View {
     @ObservedObject var net: NetSampler
     @ObservedObject var proc: ProcSampler
     let resources: ResourceSampler
+    let battery: BatterySampler
+    let charge: ChargeController
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
     @ObservedObject var state: PanelState
@@ -73,6 +75,11 @@ struct MenuPanel: View {
             telem(L.t("m.battery"), fmtTemp(mon.battery, fahrenheit: f), Theme.temp(Double(mon.battery)))
             if !mon.power.isNaN { telem(L.t("m.power"), String(format: "%.1f W", mon.power), Theme.accent) }
             if !mon.volt.isNaN { telem(L.t("m.voltage"), String(format: "%.2f V", mon.volt), Theme.accent) }
+
+            if store.config.showBatteryPanel && battery.isPresent {
+                divider
+                BatteryPanelSection(sampler: battery, charge: charge)
+            }
 
             if mon.fanCount > 0 {
                 divider

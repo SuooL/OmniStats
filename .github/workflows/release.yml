@@ -11,6 +11,11 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    env:
+      # SHA-1 of the release certificate (public; see CONTRIBUTING → Release
+      # signing). Installed helpers only accept an app signed with it, so a
+      # release signed any other way is refused. Empty = ad-hoc releases.
+      RELEASE_CERT_SHA1: 4A85013393CC7CB213ABE9F0E1A5311A9D19526B
     steps:
       - uses: actions/checkout@v4
 
@@ -24,11 +29,68 @@ jobs:
       - name: Logic and helper safety regressions
         run: make test-logic
 
+      # Releases are ad-hoc signed unless the optional MACOS_SIGN_P12 secrets exist
+      # (see CONTRIBUTING → Release signing). With them, every release is signed
+      # with that one certificate. codesign only finds identities in keychains on
+      # the search list, so the temporary keychain is added to it.
+      - name: Import optional release signing certificate
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGN_P12}" ] || [ -z "${MACOS_SIGN_P12_PASSWORD}" ]; then
+            if [ -n "$RELEASE_CERT_SHA1" ]; then
+              echo "::error::MACOS_SIGN_P12 secrets are missing but RELEASE_CERT_SHA1 is set: an ad-hoc release would cost every user their permissions and helper connection."
+              exit 1
+            fi
+            echo "No signing certificate configured: this release is ad-hoc signed."
+            echo "SIGN_ID=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/release-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          P12="$RUNNER_TEMP/release-signing.p12"
+          printf '%s' "$MACOS_SIGN_P12" | base64 --decode > "$P12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$MACOS_SIGN_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$P12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Self-signed identities are untrusted, so look them up without -v.
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk 'length($2) == 40 && $2 ~ /^[0-9A-F]+$/ { print $2; exit }')"
+          test -n "$IDENTITY"
+          echo "Signing identity SHA-1: $IDENTITY"
+          if [ -n "$RELEASE_CERT_SHA1" ] && [ "$IDENTITY" != "$RELEASE_CERT_SHA1" ]; then
+            echo "::error::MACOS_SIGN_P12 holds certificate $IDENTITY, expected $RELEASE_CERT_SHA1."
+            exit 1
+          fi
+          echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build app + helper
-        run: make
+        run: make SIGN_ID="$SIGN_ID"
 
       - name: Build DMG (for humans — drag to Applications)
-        run: make dmg
+        run: make dmg SIGN_ID="$SIGN_ID"
+
+      - name: Verify release signature
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict dist/OmniStats.app
+          if [ "$SIGN_ID" = "-" ]; then echo "Ad-hoc signed release."; exit 0; fi
+          LEAF="$(printf '%s' "${RELEASE_CERT_SHA1:-$SIGN_ID}" | tr 'A-F' 'a-f')"
+          for code in dist/OmniStats.app dist/OmniStats.app/Contents/Resources/omnistats-smcd \
+                      dist/OmniStats.app/Contents/Resources/omnistats-cleaner; do
+            REQUIREMENT="$(codesign -d -r- "$code" 2>&1 | grep 'designated' || true)"
+            echo "$code: $REQUIREMENT"
+            case "$REQUIREMENT" in
+              *"certificate leaf = H\"$LEAF\""*) ;;
+              *) echo "::error::$code is not signed with the release certificate"; exit 1 ;;
+            esac
+          done
 
       - name: Zip app (for the Sparkle updater)
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
@@ -63,3 +125,8 @@ jobs:
             OmniStats.zip
             appcast.xml
           generate_release_notes: true
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ]; then security delete-keychain "$SIGN_KEYCHAIN" || true; fi

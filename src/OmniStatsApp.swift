@@ -10,9 +10,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let netProc = NetProcSampler()
     let activity = ActivityState()
     let resources = ResourceSampler()
+    let battery = BatterySampler()
+    lazy var charge = ChargeController(monitor: monitor)
     lazy var engine = Engine(monitor: monitor, store: store)
     private lazy var sampling = SamplingCoordinator(monitor: monitor, net: net, proc: proc,
-        netProc: netProc, engine: engine, store: store, activity: activity, resources: resources)
+        netProc: netProc, engine: engine, store: store, activity: activity, resources: resources,
+        battery: battery, charge: charge)
 
     // Sparkle: start the updater immediately; scheduled checks + UI are driven by
     // the SU* keys in Info.plist. `updater` is a thin SwiftUI wrapper for Settings.
@@ -21,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusController: StatusItemController?
     private var settingsController: SettingsWindowController?
+    private var scheduleRunner: ChargeScheduleRunner?
+    // Called on the main thread, where the menu-bar manager lives.
+    lazy var menuBar = MenuBarManager(store: store) { [weak self] in
+        MainActor.assumeIsolated {
+            guard let window = self?.statusController?.statusItem.button?.window, let screen = window.screen else { return nil }
+            return screen.frame.maxX - window.frame.minX
+        }
+    }
     private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -28,13 +39,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncPresentation(store.config)
         _ = engine   // start the control loop
 
-        let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater, activity: activity)
+        let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
+                                                activity: activity, battery: battery, charge: charge, menuBar: menuBar,
+                                                uninstaller: AppUninstaller())
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
-            activity: activity, resources: resources,
+            activity: activity, resources: resources, battery: battery, charge: charge,
             onOpenSettings: { settings.show() })
         _ = sampling
+        scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
+        _ = menuBar   // after OmniStats' own icon, which anchors the menu-bar controls
 
         // Delivered on the main queue, so the main-actor-isolated window work is
         // safe to run synchronously.
@@ -47,6 +62,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 NotificationCenter.default.post(name: .openOmniSettings, object: nil)
             }
+        }
+    }
+
+    // omnistats:// links (Shortcuts "Open URL", Terminal `open`).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let command = AutomationCommand(url: url) else { continue }
+            if command == .openBatterySettings { settingsController?.show(section: .battery) }
+            else { charge.perform(command) }
         }
     }
 

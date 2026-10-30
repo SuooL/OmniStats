@@ -88,6 +88,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var showNetworkInMenuBar: Bool = true
     var showNetworkPanel: Bool = true
     var showProcesses: Bool = true
+    var showBatteryPanel: Bool = true
     var cpuWindow: CPUWindow = .tenMin   // averaging window for the top-CPU list
     var topWidgetStyle: TopWidgetStyle = .ring     // SoC/SSD/Fans cluster: ring gauge vs time-series
     var topWidgetWindow: ChartWindow = .fiveMin    // history span for the top-widget charts
@@ -101,6 +102,12 @@ struct OmniStatsConfig: Codable, Equatable {
     var rampUpPctPerSec: Double = 12     // slew limit rising  (percent/sec)
     var rampDownPctPerSec: Double = 6    // slew limit falling (percent/sec)
     var deadbandPct: Double = 2          // hysteresis
+    var chargeSchedules: [ChargeSchedule] = []
+    var menuBarHiding: Bool = false          // off by default: nothing changes until the user opts in
+    var menuBarAlwaysHidden: Bool = false
+    var menuBarAutoHide: Int = 15            // seconds; 0 = never
+    var menuBarHotKey: MenuBarHotKey? = nil
+    static let menuBarAutoHideChoices = [0, 5, 10, 15, 30, 60]
 
     static let defaultCurve: [CurvePoint] = [
         CurvePoint(temp: 40, pct: 0),
@@ -147,9 +154,10 @@ struct OmniStatsConfig: Codable, Equatable {
 extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
-             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, cpuWindow,
+             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, showBatteryPanel, cpuWindow,
              topWidgetStyle, topWidgetWindow, netChartKind, refreshMode,
-             autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
+             autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct,
+             chargeSchedules, menuBarHiding, menuBarAlwaysHidden, menuBarAutoHide, menuBarHotKey
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -163,6 +171,7 @@ extension OmniStatsConfig {
         cfg.showNetworkInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showNetworkInMenuBar) ?? cfg.showNetworkInMenuBar
         cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
         cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
+        cfg.showBatteryPanel     = try c.decodeIfPresent(Bool.self, forKey: .showBatteryPanel)     ?? cfg.showBatteryPanel
         cfg.cpuWindow            = try c.decodeIfPresent(CPUWindow.self, forKey: .cpuWindow)         ?? cfg.cpuWindow
         cfg.topWidgetStyle       = try c.decodeIfPresent(TopWidgetStyle.self, forKey: .topWidgetStyle) ?? cfg.topWidgetStyle
         cfg.topWidgetWindow      = try c.decodeIfPresent(ChartWindow.self, forKey: .topWidgetWindow) ?? cfg.topWidgetWindow
@@ -176,6 +185,13 @@ extension OmniStatsConfig {
         cfg.rampUpPctPerSec   = try c.decodeIfPresent(Double.self,        forKey: .rampUpPctPerSec)   ?? cfg.rampUpPctPerSec
         cfg.rampDownPctPerSec = try c.decodeIfPresent(Double.self,        forKey: .rampDownPctPerSec) ?? cfg.rampDownPctPerSec
         cfg.deadbandPct       = try c.decodeIfPresent(Double.self,        forKey: .deadbandPct)       ?? cfg.deadbandPct
+        // One malformed schedule (e.g. from a future version) must not discard the rest.
+        cfg.chargeSchedules   = (try? c.decodeIfPresent([Lossy<ChargeSchedule>].self, forKey: .chargeSchedules))?
+            .compactMap(\.value) ?? cfg.chargeSchedules
+        cfg.menuBarHiding       = try c.decodeIfPresent(Bool.self, forKey: .menuBarHiding)       ?? cfg.menuBarHiding
+        cfg.menuBarAlwaysHidden = try c.decodeIfPresent(Bool.self, forKey: .menuBarAlwaysHidden) ?? cfg.menuBarAlwaysHidden
+        cfg.menuBarAutoHide     = try c.decodeIfPresent(Int.self,  forKey: .menuBarAutoHide)     ?? cfg.menuBarAutoHide
+        cfg.menuBarHotKey       = try? c.decodeIfPresent(MenuBarHotKey.self, forKey: .menuBarHotKey)
         self = cfg.validated()
     }
 
@@ -201,6 +217,8 @@ extension OmniStatsConfig {
             if points.count == 32 { break }
         }
         cfg.curve = points.count >= 2 ? points : Self.defaultCurve
+        cfg.chargeSchedules = Array(chargeSchedules.filter(\.isValid).prefix(16))
+        if !Self.menuBarAutoHideChoices.contains(menuBarAutoHide) { cfg.menuBarAutoHide = 15 }
         return cfg
     }
 }
@@ -238,4 +256,10 @@ final class ConfigStore: ObservableObject {
             defaults.set(data, forKey: key)
         }
     }
+}
+
+// Decodes an array element as nil instead of failing the whole array.
+struct Lossy<Value: Decodable>: Decodable {
+    let value: Value?
+    init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
 }

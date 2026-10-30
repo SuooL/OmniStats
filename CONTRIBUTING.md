@@ -40,6 +40,44 @@ git tag vX.Y.Z && git push origin vX.Y.Z   # release.yml builds & publishes
 Bump both `CFBundleVersion` and `CFBundleShortVersionString` in `packaging/Info.plist` to match the tag —
 the in-app updater compares against it.
 
+## Release signing
+
+Releases are not notarized. macOS keys privacy grants (Accessibility, Full
+Disk Access, …) to the app's designated requirement; an ad-hoc signature pins
+that to one build, so users of ad-hoc builds re-grant permissions after every
+update. Features that need such permissions must still detect a lost grant and
+guide the user.
+
+Since 1.6.0 releases are signed with one fixed **self-signed** certificate. The
+`MACOS_SIGN_P12` secrets hold it, the release workflow signs with it, and the
+requirement becomes
+`identifier "io.github.suool.omnistats" and certificate leaf = H"<sha1>"` for
+every release. The root helper derives its client check from the same
+certificate: a certificate-signed helper only accepts the app signed with it.
+
+Setting it up (maintainer, one time; already done for this repository):
+
+```bash
+bash tools/make-signing-cert.sh            # writes to ~/OmniStats-signing, never the repo
+base64 -i ~/OmniStats-signing/omnistats-release.p12 | gh secret set MACOS_SIGN_P12
+gh secret set MACOS_SIGN_P12_PASSWORD < ~/OmniStats-signing/omnistats-release.p12.password
+```
+
+Back up the `.p12` and its password. Replacing the certificate changes the
+requirement, so every user would have to grant permissions again and reinstall
+the helper. Releases are signed with the "OmniStats Release" certificate
+(SHA-1 `4A85013393CC7CB213ABE9F0E1A5311A9D19526B`, valid until 2046), pinned as
+`RELEASE_CERT_SHA1` in `release.yml`. The workflow refuses to publish when the
+secrets are missing or hold another certificate, and checks that the app,
+helper and cleaner carry it. To change the certificate deliberately, update
+the secrets and `RELEASE_CERT_SHA1` together; to go back to ad-hoc releases,
+empty `RELEASE_CERT_SHA1`.
+
+`make` signs ad-hoc by default (`SIGN_ID=-`). To sign a local build with an
+identity from your keychain, pass `make SIGN_ID="OmniStats Release"`. A
+certificate-signed helper rejects ad-hoc builds of the app; reinstall the helper
+from the build you are testing.
+
 ## Build
 
 Requires the Command Line Tools (`xcode-select --install`); full Xcode is not
@@ -79,9 +117,11 @@ the real app or a long-running leak test.
 | `src/smc.h`             | AppleSMC read/write + fan-key probing (shared C)  |
 | `src/sensors.{h,m}`     | Temperature/fan/power sampling → clean C API       |
 | `src/control.{h,m}`     | Persistent client to the privileged helper         |
-| `src/smcd.m`            | `omnistats-smcd` — root helper daemon              |
+| `src/smcd.m`            | `omnistats-smcd` — root helper: fans + charge limit |
+| `src/cleaner.c`         | `omnistats-cleaner` — one-shot mover for an uninstalled app's system files |
 | `src/*.swift`           | SwiftUI app (Theme, Config, Model/Engine, Curve, Panels, Updater) |
 | `packaging/`            | LaunchDaemon plist, Info.plist, install scripts    |
+| `tools/`                | Icon generation, release signing certificate       |
 | `.github/workflows/`    | CI + Release                                       |
 
 ## Design notes
@@ -92,8 +132,17 @@ the real app or a long-running leak test.
   to `[F<n>Mn, F<n>Mx]`. Note the lowercase `md` on M-series.
 - The **engine** smooths temperature (EMA), applies a hysteresis deadband, and
   slew-limits the commanded speed so fans never surge.
-- The **helper** verifies the peer uid, and a watchdog reverts to firmware auto
-  if the app disconnects or hangs.
+- The **helper** verifies the peer uid (plus the peer's code signature when the
+  helper is certificate-signed), and a watchdog reverts to firmware auto if the
+  app disconnects or hangs.
+- **Battery charge control** (protocol 6: `BSTATUS`, `BSET key=value…`,
+  `BTOPUP 0|1`, `BDISCHARGE <10–95|0>`, `BCALIBRATE 0|1`; limit, sailing,
+  sleep options, heat protection, MagSafe LED, adapter cut-off)
+  runs inside the helper on its own serial queue: a 10 s tick,
+  sleep/wake notifications, and settings persisted root-owned under
+  `/Library/Application Support/OmniStats`. Fan and battery SMC calls share
+  one lock. The policy is a pure function (`batteryShouldInhibit`) covered by
+  `tests/helper_safety_tests.m`; every doubt resolves towards charging.
 
 ## Code style
 

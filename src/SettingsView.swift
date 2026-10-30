@@ -1,10 +1,19 @@
 import SwiftUI
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case fans, general, about
+    case fans, battery, menuBar, apps, general, about
     var id: String { rawValue }
-    var title: String { self == .fans ? L.t("section.fans") : self == .general ? L.t("section.general") : L.t("section.about") }
-    var icon: String { self == .fans ? "fanblades.fill" : self == .general ? "gearshape.fill" : "info.circle.fill" }
+    var title: String { L.t("section.\(rawValue)") }
+    var icon: String {
+        switch self {
+        case .fans:    return "fanblades.fill"
+        case .battery: return "battery.100percent.bolt"
+        case .menuBar: return "menubar.rectangle"
+        case .apps:    return "trash"
+        case .general: return "gearshape.fill"
+        case .about:   return "info.circle.fill"
+        }
+    }
 }
 
 // Set from launch args (--section) so screenshots can open a specific pane.
@@ -20,7 +29,18 @@ struct SettingsView: View {
     @ObservedObject var store: ConfigStore
     let engine: Engine
     let updater: Updater
+    let battery: BatterySampler
+    let charge: ChargeController
+    let menuBar: MenuBarManager?
+    var uninstaller: AppUninstaller?
     @ObservedObject var state: SettingsState
+
+    // Desktop Macs have no battery pane.
+    var sections: [SettingsSection] {
+        SettingsSection.allCases.filter {
+            ($0 != .battery || battery.isPresent) && ($0 != .menuBar || menuBar != nil) && ($0 != .apps || uninstaller != nil)
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -46,7 +66,7 @@ struct SettingsView: View {
                 Text("OmniStats").font(.system(size: 15, weight: .bold))
             }.padding(.bottom, 16).padding(.horizontal, 6).padding(.top, 8)
 
-            ForEach(SettingsSection.allCases) { s in
+            ForEach(sections) { s in
                 Button { state.section = s } label: {
                     HStack(spacing: 9) {
                         Image(systemName: s.icon).frame(width: 18)
@@ -70,7 +90,10 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
-        case .general: GeneralPane(store: store)
+        case .battery: BatteryPane(sampler: battery, store: store, mon: mon, charge: charge)
+        case .menuBar: if let menuBar { MenuBarPane(store: store, manager: menuBar) }
+        case .apps:    if let uninstaller { AppsPane(model: uninstaller) }
+        case .general: GeneralPane(store: store, hasBattery: battery.isPresent)
         case .about:   AboutPane(mon: mon, store: store, updater: updater)
         }
     }
@@ -288,6 +311,8 @@ struct FansPane: View {
 // MARK: - General
 struct GeneralPane: View {
     @ObservedObject var store: ConfigStore
+    let hasBattery: Bool
+    @StateObject private var loginItem = LoginItem()
     private var cfg: OmniStatsConfig { store.config }
 
     var body: some View {
@@ -297,6 +322,8 @@ struct GeneralPane: View {
                     Text(L.t("g.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
                     Text(L.t("g.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
                 }
+
+                cardSection(L.t("g.sectionStartup")) { startupRows }
 
                 // Display, language & colors
                 cardSection(L.t("g.sectionDisplay")) {
@@ -369,6 +396,10 @@ struct GeneralPane: View {
                     toggleRow(L.t("g.showNetworkPanel"), bind(\.showNetworkPanel))
                     Divider().overlay(Theme.line)
                     toggleRow(L.t("g.showProcesses"), bind(\.showProcesses))
+                    if hasBattery {
+                        Divider().overlay(Theme.line)
+                        toggleRow(L.t("g.showBatteryPanel"), bind(\.showBatteryPanel))
+                    }
                     Divider().overlay(Theme.line)
                     row(L.t("g.cpuWindow")) {
                         Picker("", selection: bind(\.cpuWindow)) {
@@ -379,6 +410,38 @@ struct GeneralPane: View {
                 Spacer(minLength: 0)
             }
         }
+        // The user can change the login item in System Settings while we're away.
+        .onAppear { loginItem.refresh() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginItem.refresh()
+        }
+    }
+
+    // Turning the item off stays possible from anywhere; turning it on needs an
+    // installed copy, so a stale DMG/Downloads path never ends up as a login item.
+    @ViewBuilder private var startupRows: some View {
+        let blocked = !loginItem.canRegister && !loginItem.isOn
+        toggleRow(L.t("g.launchAtLogin"), Binding(get: { loginItem.isOn }, set: { loginItem.setEnabled($0) }))
+            .disabled(blocked)
+        if blocked {
+            note(L.t("g.loginNeedsApplications"))
+        } else if loginItem.needsApproval {
+            HStack(spacing: 10) {
+                note(L.t("g.loginApproval"))
+                Spacer()
+                Button(L.t("g.openLoginItems")) { loginItem.openSystemSettings() }
+                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+            }
+        }
+        if let error = loginItem.lastError {
+            Text(L.f("g.loginFailed", error)).font(.system(size: 11)).foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private var accentSwatches: some View {

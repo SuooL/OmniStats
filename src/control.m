@@ -105,3 +105,9 @@ int cb_ctl_auto(int fan) {
 }
 int cb_ctl_auto_all(void) { return ok("AUTOALL\n"); }
 int cb_ctl_heartbeat(void) { return ok("HB\n"); }
+int cb_ctl_command(const char *command, char *reply, int capacity) {
+    char line[256];
+    if(!command || !reply || capacity < 2 || strchr(command, '\n')) return -1;
+    if(snprintf(line, sizeof(line), "%s\n", command) >= (int)sizeof(line)) return -1;
+    return request(line, reply, (size_t)capacity);
+}
