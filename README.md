@@ -177,6 +177,22 @@ goes to the Trash, so it can be restored.
 - Other apps' containers need Full Disk Access; without it they stay unticked.
   With ad-hoc signed releases macOS asks for it again after each update.
 - Each uninstall writes a log to `~/Library/Logs/OmniStats`.
+- **Reset…** keeps the app and moves only the selected data, caches and
+  settings to the Trash; the app bundle, its launch agents, daemons, helpers
+  and install receipt stay, so it starts as if freshly installed.
+- Apps installed with Homebrew are labelled as such. Their cask's own cleanup
+  list (`zap`) is added to the items (labelled "Homebrew"), but only paths the
+  uninstaller would accept anyway: never a home or Library root, and outside
+  your home folder only what `omnistats-cleaner` may move. Removing a cask app
+  here leaves Homebrew's record behind, so the pane offers
+  `brew uninstall --zap --cask <token>` to copy instead.
+- **Leftovers of deleted apps** scans for files named after apps that are no
+  longer installed (or known to Launch Services anywhere else). Only
+  reverse-DNS names count; anything belonging to an installed app or another
+  app from the same vendor, SDK and system data (Amplitude, Crashlytics, CUPS,
+  Swift PM, …) and command-line tools' settings are left out, and launch jobs
+  count only when their program is gone. Nothing is ticked until you review
+  it.
 
 ## Menu bar icons
 

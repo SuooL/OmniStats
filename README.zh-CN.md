@@ -127,6 +127,9 @@ Apple Silicon 风扇由 SMC 管理。OmniStats 以 root 写两个 SMC key 来控
 - 系统文件夹中的项目由 `omnistats-cleaner` 移动:它只在管理员授权后运行一次,只接受固定几个文件夹的直接子项,拒绝符号链接和 `..`,不调用 shell,而且只移动、不删除。
 - 其他应用的容器需要完全磁盘访问权限,没有权限时默认不勾选。发布版为 ad-hoc 签名,每次更新后 macOS 会再次要求授权。
 - 每次卸载都会在 `~/Library/Logs/OmniStats` 中写一份日志。
+- **重置…** 保留应用,只把所选的数据、缓存和设置移到废纸篓;应用本身、后台项、系统服务、特权助手和安装记录都会保留,下次打开就像刚安装一样。
+- 由 Homebrew 安装的应用会标注出来,它的 cask 自带的清理清单(`zap`)也会加入列表(标为「Homebrew」),但只收卸载器本来就会接受的路径:绝不包括主目录或 Library 的根,主目录之外只收 `omnistats-cleaner` 允许移动的项目。在这里移除 cask 应用后,Homebrew 仍保留它的记录,所以界面上提供 `brew uninstall --zap --cask <token>` 供复制使用。
+- **已删除应用的残留** 会扫描以已不在 Mac 上(Launch Services 也找不到)的应用命名的文件。只认反向域名形式的名称;属于已安装应用或同一厂商其他应用的文件、SDK 和系统数据(Amplitude、Crashlytics、CUPS、Swift PM 等)以及命令行工具的设置都会排除,后台项只有在它指向的程序已不存在时才算。所有项目默认不勾选,请逐项确认。
 
 ## 菜单栏图标
 
