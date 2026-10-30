@@ -2,33 +2,48 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>              <string>OmniStats</string>
-    <key>CFBundleDisplayName</key>       <string>OmniStats</string>
-    <key>CFBundleIdentifier</key>        <string>io.github.suool.omnistats</string>
-    <key>CFBundleVersion</key>           <string>1.6.0</string>
-    <key>CFBundleShortVersionString</key><string>1.6.0</string>
-    <key>CFBundlePackageType</key>       <string>APPL</string>
-    <key>CFBundleExecutable</key>        <string>OmniStats</string>
-    <key>CFBundleIconFile</key>          <string>AppIcon</string>
-    <key>CFBundleIconName</key>          <string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key>    <string>13.0</string>
-    <key>LSUIElement</key>               <true/>
-    <key>NSHumanReadableCopyright</key>  <string>MIT License</string>
-    <!-- omnistats:// links for Shortcuts and scripts (charge-limit actions only). -->
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>       <string>io.github.suool.omnistats</string>
-            <key>CFBundleURLSchemes</key>    <array><string>omnistats</string></array>
-        </dict>
-    </array>
-
-    <!-- Sparkle auto-update. Appcast is published as a release asset, so the feed
-         URL never touches the rate-limited api.github.com. -->
-    <key>SUFeedURL</key>                 <string>https://github.com/SuooL/OmniStats/releases/latest/download/appcast.xml</string>
-    <!-- Pairs with the SPARKLE_ED_PRIVATE_KEY CI secret (generate_appcast signs with it). -->
-    <key>SUPublicEDKey</key>             <string>04g3YilQ1puyjL30P0psFXzmJC1s54Z63PPGeXLdolo=</string>
-    <key>SUEnableAutomaticChecks</key>   <true/>
-    <key>SUScheduledCheckInterval</key>  <integer>21600</integer>
+	<key>CFBundleDisplayName</key>
+	<string>OmniStats</string>
+	<key>CFBundleExecutable</key>
+	<string>OmniStats</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.suool.omnistats</string>
+	<key>CFBundleName</key>
+	<string>OmniStats</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.6.1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>io.github.suool.omnistats</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>omnistats</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1.6.1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT License</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/SuooL/OmniStats/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>04g3YilQ1puyjL30P0psFXzmJC1s54Z63PPGeXLdolo=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>21600</integer>
 </dict>
 </plist>

@@ -155,8 +155,9 @@ closed.
 - **Discharge & calibration** pause the power adapter (SMC `CHIE`) so a
   plugged-in Mac runs from its battery: discharge to a chosen level, keep it
   down at the limit automatically, or calibrate (full → hold 1 h → 15 % → full →
-  hold 1 h → back to the limit, usually 6–10 h). These are deliberately not
-  reachable from links or schedules.
+  hold 1 h → back to the limit, usually 6–10 h, every step automatic; 99 % with
+  charging finished counts as full). These are deliberately not reachable from
+  links or schedules.
 
 ## Uninstalling apps
 

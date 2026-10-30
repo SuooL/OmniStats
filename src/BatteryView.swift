@@ -542,7 +542,9 @@ struct DischargeCard: View {
         if status.calibration != .idle {
             calibrationRow(status)
         } else if let manual = status.dischargeTarget {
-            activeRow(L.f("dc.active", manual)) { control.discharge(to: nil) }
+            activeRow(L.f("dc.active", manual) + (status.percent.map { " · " + L.f("dc.progress.now", $0) } ?? "")) {
+                control.discharge(to: nil)
+            }
         } else if status.adapterCut {
             note(L.f("dc.activeAuto", settings.limit))
         } else {
@@ -559,8 +561,16 @@ struct DischargeCard: View {
         }
     }
 
-    private func calibrationRow(_ status: ChargeControlStatus) -> some View {
+    @ViewBuilder private func calibrationRow(_ status: ChargeControlStatus) -> some View {
+        activeRow(Self.calibrationText(status)) { control.calibrate(false) }
+        note(L.t("dc.calibrateAuto"))
+    }
+
+    // "Calibrating · Step 1/5: charging to 100% · now 99%, 61 min so far"
+    static func calibrationText(_ status: ChargeControlStatus) -> String {
         let holdLeft = max(0, Int((3600 - status.calibrationElapsed) / 60))
+        let minutes = Int(status.calibrationElapsed / 60)
+        var progress: String?
         let text: String
         switch status.calibration {
         case .charge1: text = L.t("dc.phase.charge1")
@@ -571,7 +581,12 @@ struct DischargeCard: View {
         case .toLimit: text = L.t("dc.phase.toLimit")
         case .idle: text = ""
         }
-        return activeRow(L.t("dc.calibrating") + " · " + text) { control.calibrate(false) }
+        switch status.calibration {
+        case .charge1, .charge2: progress = status.percent.map { L.f("dc.progress.charge", $0, minutes) }
+        case .discharge, .toLimit: progress = status.percent.map { L.f("dc.progress.now", $0) }
+        default: break
+        }
+        return [L.t("dc.calibrating"), text, progress].compactMap { $0 }.joined(separator: " · ")
     }
 
     @ViewBuilder private func calibrationStart(_ status: ChargeControlStatus) -> some View {
