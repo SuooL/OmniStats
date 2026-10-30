@@ -38,7 +38,25 @@ int main(void) {
     }
     assert(handleLine(pair[0],"HB")==1); assert(read(pair[1],response,sizeof(response))>0);
     assert(handleLine(pair[0],"SET 0 3000")==1); assert(read(pair[1],response,sizeof(response))>0);
+
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    for(int i=0;i<CC_SHA1_DIGEST_LENGTH;i++) digest[i]=(unsigned char)(i*13);
+    char requirement[256], tiny[32];
+    assert(formatClientRequirement(requirement,sizeof(requirement),digest));
+    assert(strcmp(requirement,"identifier \"io.github.suool.omnistats\" and certificate leaf = H\"000d1a2734414e5b6875828f9ca9b6c3d0ddeaf7\"")==0);
+    assert(!formatClientRequirement(tiny,sizeof(tiny),digest));
+    CFStringRef text=CFStringCreateWithCString(NULL,requirement,kCFStringEncodingUTF8);
+    SecRequirementRef parsed=NULL;
+    assert(SecRequirementCreateWithString(text,kSecCSDefaultFlags,&parsed)==errSecSuccess && parsed);
+    CFRelease(parsed); CFRelease(text);
+    // CI binaries are linker-signed (ad-hoc): no certificate, console-user check only.
+    // To test the signed path, sign this binary with a certificate and set
+    // OMNISTATS_SIGNED_PEER_EXPECT to 1 (identifier io.github.suool.omnistats) or 0.
+    gClientRequirement=copyClientRequirement();
+    const char *expect=getenv("OMNISTATS_SIGNED_PEER_EXPECT");
+    if(expect) assert(gSignedHelper && gClientRequirement && peerSigned(pair[0])==atoi(expect));
+    else assert(!gSignedHelper && !gClientRequirement && peerSigned(pair[0])==1);
     close(pair[0]); close(pair[1]);
-    puts("PASS: nonfinite inputs, bounds, clamp, failed-auto retries, exact command parsing and watchdog heartbeat classification");
+    puts("PASS: nonfinite inputs, bounds, clamp, failed-auto retries, exact command parsing, watchdog heartbeat classification and client signature requirement");
     return 0;
 }

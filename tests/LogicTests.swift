@@ -256,6 +256,14 @@ struct LogicTests {
         check(monitor.latestSnapshot == nil, "Sleep must invalidate internal control temperature")
         monitor.shutdown()
         check(HelperInstaller.shellQuote("a'b") == "'a'\\''b'", "Shell paths containing quotes")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence")
+        let home = "/Users/tester"
+        check(LoginItem.isInstalled(bundlePath: "/Applications/OmniStats.app", home: home), "System Applications is an installed copy")
+        check(LoginItem.isInstalled(bundlePath: "/Users/tester/Applications/OmniStats.app", home: home), "User Applications is an installed copy")
+        check(!LoginItem.isInstalled(bundlePath: "/private/var/folders/x/AppTranslocation/1234/d/OmniStats.app", home: home), "Translocated copies must not register")
+        check(!LoginItem.isInstalled(bundlePath: "/Volumes/OmniStats/OmniStats.app", home: home), "The mounted DMG must not register")
+        check(!LoginItem.isInstalled(bundlePath: "/Users/tester/Downloads/OmniStats.app", home: home), "Downloads must not register")
+        check(!LoginItem.isInstalled(bundlePath: "/Applications/../tmp/OmniStats.app", home: home), "Paths are normalized before matching")
+        check(!LoginItem.isInstalled(bundlePath: "/ApplicationsX/OmniStats.app", home: home), "Prefix match needs a folder boundary")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location")
     }
 }

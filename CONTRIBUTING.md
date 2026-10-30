@@ -40,6 +40,35 @@ git tag vX.Y.Z && git push origin vX.Y.Z   # release.yml builds & publishes
 Bump both `CFBundleVersion` and `CFBundleShortVersionString` in `packaging/Info.plist` to match the tag —
 the in-app updater compares against it.
 
+## Release signing
+
+Releases are signed with one fixed **self-signed** certificate, not an Apple
+Developer ID (so they are still not notarized). macOS keys privacy grants
+(Accessibility, Full Disk Access, …) to the app's designated requirement; an
+ad-hoc signature pins that to a single build, so every update would silently
+revoke them. With the fixed certificate the requirement is
+`identifier "io.github.suool.omnistats" and certificate leaf = H"<sha1>"` for
+every release. The root helper derives its client check from the same
+certificate: a certificate-signed helper only accepts the app signed with it.
+
+One-time setup (maintainer):
+
+```bash
+bash tools/make-signing-cert.sh            # writes to ~/OmniStats-signing, never the repo
+base64 -i ~/OmniStats-signing/omnistats-release.p12 | gh secret set MACOS_SIGN_P12
+gh secret set MACOS_SIGN_P12_PASSWORD < ~/OmniStats-signing/omnistats-release.p12.password
+```
+
+Back up the `.p12` and its password. Replacing the certificate changes the
+requirement, so every user would have to grant permissions again. The release
+workflow refuses to publish without these secrets and checks that the app and
+helper carry the certificate.
+
+`make` signs ad-hoc by default (`SIGN_ID=-`). To sign a local build with an
+identity from your keychain, pass `make SIGN_ID="OmniStats Release"`. A
+certificate-signed helper rejects ad-hoc builds of the app; reinstall the helper
+from the build you are testing.
+
 ## Build
 
 Requires the Command Line Tools (`xcode-select --install`); full Xcode is not
@@ -82,6 +111,7 @@ the real app or a long-running leak test.
 | `src/smcd.m`            | `omnistats-smcd` — root helper daemon              |
 | `src/*.swift`           | SwiftUI app (Theme, Config, Model/Engine, Curve, Panels, Updater) |
 | `packaging/`            | LaunchDaemon plist, Info.plist, install scripts    |
+| `tools/`                | Icon generation, release signing certificate       |
 | `.github/workflows/`    | CI + Release                                       |
 
 ## Design notes
@@ -92,8 +122,9 @@ the real app or a long-running leak test.
   to `[F<n>Mn, F<n>Mx]`. Note the lowercase `md` on M-series.
 - The **engine** smooths temperature (EMA), applies a hysteresis deadband, and
   slew-limits the commanded speed so fans never surge.
-- The **helper** verifies the peer uid, and a watchdog reverts to firmware auto
-  if the app disconnects or hangs.
+- The **helper** verifies the peer uid (plus the peer's code signature when the
+  helper is certificate-signed), and a watchdog reverts to firmware auto if the
+  app disconnects or hangs.
 
 ## Code style
 

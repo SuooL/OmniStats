@@ -38,11 +38,14 @@ enum HelperInstaller {
 
     static func install() -> Bool {
         guard let res = Bundle.main.resourcePath else { return false }
+        // `cp -X` drops extended attributes: a copy from a downloaded bundle would
+        // otherwise carry com.apple.quarantine, and the macOS 27 release notes say
+        // launchd no longer loads property lists that have it.
         let cmd = [
             "mkdir -p /usr/local/sbin",
-            "cp \(shellQuote(res + "/omnistats-smcd")) \(shellQuote(binDst))",
+            "cp -X \(shellQuote(res + "/omnistats-smcd")) \(shellQuote(binDst))",
             "chown root:wheel '\(binDst)'", "chmod 755 '\(binDst)'",
-            "cp \(shellQuote(res + "/com.omnistats.smcd.plist")) \(shellQuote(plistDst))",
+            "cp -X \(shellQuote(res + "/com.omnistats.smcd.plist")) \(shellQuote(plistDst))",
             "chown root:wheel '\(plistDst)'", "chmod 644 '\(plistDst)'",
             "(launchctl unload '\(plistDst)' 2>/dev/null || true)",
             "launchctl load -w '\(plistDst)'",
@@ -168,7 +171,7 @@ final class Monitor: ObservableObject {
         control.poll { [weak self] available, version in
             guard let self else { return }
             if self.helperAvailable != available { self.helperAvailable = available }
-            let needsUpdate = available && version < 2
+            let needsUpdate = available && version < 3
             if self.helperNeedsUpdate != needsUpdate { self.helperNeedsUpdate = needsUpdate }
         }
     }

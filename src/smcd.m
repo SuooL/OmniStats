@@ -1,6 +1,9 @@
-// Privileged fan-control helper, protocol 2. Only SET/HB renew the manual-mode
+// Privileged fan-control helper, protocol 3. Only SET/HB renew the manual-mode
 // watchdog; PING, VERSION and malformed traffic cannot keep stale control alive.
+// A certificate-signed helper only serves the app signed by that same certificate.
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <sys/socket.h>
 #import <sys/un.h>
 #import <sys/stat.h>
@@ -12,11 +15,14 @@
 #import "smc.h"
 
 #define SOCK_PATH "/var/run/omnistats.sock"
+#define CLIENT_IDENTIFIER "io.github.suool.omnistats"
 #define WATCHDOG_SEC 12
 #define MAX_FANS 8
 static int gFanCount = 0;
 static int gManual[MAX_FANS] = {0};
 static volatile sig_atomic_t gStop = 0;
+static int gSignedHelper = 0;
+static SecRequirementRef gClientRequirement = NULL;
 
 static double nowSeconds(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -56,6 +62,67 @@ static int peerAllowed(int fd) {
     if(getpeereid(fd, &uid, &gid)) return 0;
     return uid == 0 || (stat("/dev/console", &console) == 0 && uid == console.st_uid);
 }
+// The app's identifier, signed by this helper's certificate. The hash is the
+// certificate's SHA-1, the same form codesign writes into designated requirements.
+static int formatClientRequirement(char *out, size_t size, const unsigned char digest[CC_SHA1_DIGEST_LENGTH]) {
+    char hex[CC_SHA1_DIGEST_LENGTH * 2 + 1];
+    for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+    int count = snprintf(out, size, "identifier \"%s\" and certificate leaf = H\"%s\"", CLIENT_IDENTIFIER, hex);
+    return count > 0 && (size_t)count < size;
+}
+// Release builds sign the app and helper with one fixed certificate. Ad-hoc
+// development builds have no certificate and keep only the console-user check.
+// A signed helper whose requirement cannot be built rejects every non-root peer.
+static SecRequirementRef copyClientRequirement(void) {
+    SecCodeRef selfCode = NULL; SecStaticCodeRef staticCode = NULL;
+    CFDictionaryRef info = NULL; SecRequirementRef requirement = NULL;
+    gSignedHelper = 0;
+    if(SecCodeCopySelf(kSecCSDefaultFlags, &selfCode) == errSecSuccess &&
+       SecCodeCopyStaticCode(selfCode, kSecCSDefaultFlags, &staticCode) == errSecSuccess &&
+       SecCodeCopySigningInformation(staticCode, kSecCSSigningInformation, &info) == errSecSuccess) {
+        CFArrayRef certificates = (CFArrayRef)CFDictionaryGetValue(info, kSecCodeInfoCertificates);
+        if(certificates && CFArrayGetCount(certificates) > 0) {
+            gSignedHelper = 1;
+            CFDataRef leaf = SecCertificateCopyData((SecCertificateRef)CFArrayGetValueAtIndex(certificates, 0));
+            unsigned char digest[CC_SHA1_DIGEST_LENGTH]; char text[256];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            if(leaf) CC_SHA1(CFDataGetBytePtr(leaf), (CC_LONG)CFDataGetLength(leaf), digest);
+#pragma clang diagnostic pop
+            if(leaf && formatClientRequirement(text, sizeof(text), digest)) {
+                CFStringRef string = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
+                if(string) { SecRequirementCreateWithString(string, kSecCSDefaultFlags, &requirement); CFRelease(string); }
+            }
+            if(leaf) CFRelease(leaf);
+        }
+    }
+    if(info) CFRelease(info);
+    if(staticCode) CFRelease(staticCode);
+    if(selfCode) CFRelease(selfCode);
+    return requirement;
+}
+// Checks the connected process through its audit token (a pid can be recycled).
+static int peerSigned(int fd) {
+    uid_t uid; gid_t gid;
+    if(!gSignedHelper) return 1;
+    if(getpeereid(fd, &uid, &gid)) return 0;
+    if(uid == 0) return 1;
+    if(!gClientRequirement) return 0;
+    audit_token_t token; socklen_t size = sizeof(token);
+    if(getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &size) || size != sizeof(token)) return 0;
+    CFDataRef data = CFDataCreate(NULL, (const UInt8 *)&token, sizeof(token));
+    if(!data) return 0;
+    const void *keys[] = {kSecGuestAttributeAudit}, *values[] = {data};
+    CFDictionaryRef attributes = CFDictionaryCreate(NULL, keys, values, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    SecCodeRef code = NULL;
+    OSStatus status = attributes ? SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, &code) : errSecParam;
+    if(status == errSecSuccess) status = SecCodeCheckValidity(code, kSecCSDefaultFlags, gClientRequirement);
+    if(code) CFRelease(code);
+    if(attributes) CFRelease(attributes);
+    CFRelease(data);
+    return status == errSecSuccess;
+}
 static void onSignal(int signal) { (void)signal; gStop = 1; }
 static int sendReply(int fd, const char *reply) {
     size_t sent = 0, size = strlen(reply);
@@ -74,7 +141,7 @@ static int handleLine(int fd, const char *line) {
     int fan = -1, heartbeat = 0;
     float rpm;
     if(strcmp(line, "PING") == 0) strcpy(reply, "OK\n");
-    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 2\n");
+    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 3\n");
     else if(strcmp(line, "HB") == 0) { strcpy(reply, "OK\n"); heartbeat = 1; }
     else if(strcmp(line, "AUTOALL") == 0) strcpy(reply, autoAll() == 0 ? "OK\n" : "ERR auto\n");
     else if(sscanf(line, "AUTO %d %c", &fan, &extra) == 1 && strncmp(line, "AUTO ", 5) == 0) {
@@ -116,14 +183,16 @@ int main(void) {
         perror("control socket"); if(server >= 0) close(server); return 1;
     }
     chmod(SOCK_PATH, 0666); // Every command additionally checks the console user's uid.
-    fprintf(stderr, "omnistats-smcd protocol 2: %d fans\n", gFanCount);
+    gClientRequirement = copyClientRequirement();
+    fprintf(stderr, "omnistats-smcd protocol 3: %d fans, %s clients\n", gFanCount,
+        !gSignedHelper ? "console-user" : gClientRequirement ? "signed" : "no (requirement unavailable)");
     while(!gStop) {
         struct pollfd listening = {server, POLLIN, 0};
         int result = poll(&listening, 1, anyManual() ? 2000 : -1);
         if(result <= 0) { if(anyManual()) autoAll(); continue; }
         int client = accept(server, NULL, NULL);
         if(client < 0) continue;
-        if(!peerAllowed(client)) { close(client); continue; }
+        if(!peerAllowed(client) || !peerSigned(client)) { close(client); continue; }
         struct timeval timeout = {0, 750000};
         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
         double lastHeartbeat = nowSeconds();
