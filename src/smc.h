@@ -77,6 +77,12 @@ static inline int smcWriteFloat(const char *key, float v){
     } else return -1;
     if(smcCall(&i,&o)) return -2; if(o.res) return -3; return 0;
 }
+// Raw write that refuses any size other than the key's own.
+static inline int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned int size){
+    unsigned int sz,ty; if(smcInfo(key,&sz,&ty) || sz!=size || size>32) return -1;
+    SMCData i={0},o={0}; i.key=smcFourcc(key); i.ki.sz=sz; i.d8=kSMCWrite; memcpy(i.by,bytes,sz);
+    if(smcCall(&i,&o)) return -2; if(o.res) return -3; return 0;
+}
 static inline int smcWriteU8(const char *key, unsigned char v){
     unsigned int sz,ty; if(smcInfo(key,&sz,&ty)) return -1;
     SMCData i={0},o={0}; i.key=smcFourcc(key); i.ki.sz=sz; i.d8=kSMCWrite; i.by[0]=v;

@@ -46,7 +46,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🎨 Dark & light "thermal instrument" themes
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
 - 🚀 Optional launch at login (General → Startup)
-- 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow — read-only, no administrator access
+- 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow without administrator access, plus an optional charge limit with sailing mode (through the helper)
 - ⬆️ Built-in update check with optional one-click self-update
 - 🪶 Tiny native SwiftUI app — no Electron, no background bloat
 
@@ -112,6 +112,25 @@ fans (e.g. MacBook Air) fall back to monitor-only mode.
 Temperatures are read from the private `IOHIDEventSystemClient` thermal sensors;
 fan RPM and power from the SMC.
 
+## How battery charge control works
+
+The root helper enforces the limit itself, so it keeps working while the app is
+closed.
+
+- Every 10 s, and on wake, it reads the charge from `AppleSmartBattery` and
+  pauses charging at your limit by writing the SMC key `CHTE` (`CH0B`/`CH0C` on
+  older firmware). Charging resumes only once the charge falls to the "resume"
+  level (sailing mode), so the battery doesn't cycle around the limit.
+- **macOS's own charge limit** (System Settings › Battery, macOS 26.4+) stays in
+  place as a safety net. Only System Settings can change it; if your limit is
+  above it, the Battery pane tells you to raise it.
+- Firmware in recent updates reportedly rejects these writes (macOS 15.8 / 26.7 /
+  27). On such a Mac the pane says so and points to macOS's own limit.
+- Options: pause charging before sleep, and stay out of idle sleep until the
+  limit is reached. **Charge to full now** lifts the limit until you unplug.
+- Planned, not yet available: discharging while plugged in, calibration, heat
+  protection, MagSafe LED control and schedules.
+
 ## Hardware-friendly control
 
 Fan speed is never yanked around. Three layers keep it smooth:
@@ -134,6 +153,11 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
   other local accounts can't hijack your fans. In release builds it also checks
   the connecting app's code signature, so only OmniStats signed with the same
   certificate can send it commands.
+- Charge control fails towards charging: the helper allows charging again when
+  it exits (uninstall, shutdown), when the battery can't be read, and when the
+  limit is turned off. It writes nothing while another charge manager (AlDente,
+  batt, Battery Toolkit) is running, and never touches the charging keys unless
+  you turn the limit on.
 
 ## Updates
 

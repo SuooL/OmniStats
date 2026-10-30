@@ -108,7 +108,7 @@ the real app or a long-running leak test.
 | `src/smc.h`             | AppleSMC read/write + fan-key probing (shared C)  |
 | `src/sensors.{h,m}`     | Temperature/fan/power sampling → clean C API       |
 | `src/control.{h,m}`     | Persistent client to the privileged helper         |
-| `src/smcd.m`            | `omnistats-smcd` — root helper daemon              |
+| `src/smcd.m`            | `omnistats-smcd` — root helper: fans + charge limit |
 | `src/*.swift`           | SwiftUI app (Theme, Config, Model/Engine, Curve, Panels, Updater) |
 | `packaging/`            | LaunchDaemon plist, Info.plist, install scripts    |
 | `tools/`                | Icon generation, release signing certificate       |
@@ -125,6 +125,12 @@ the real app or a long-running leak test.
 - The **helper** verifies the peer uid (plus the peer's code signature when the
   helper is certificate-signed), and a watchdog reverts to firmware auto if the
   app disconnects or hangs.
+- **Battery charge control** (protocol 4: `BSTATUS`, `BSET key=value…`,
+  `BTOPUP 0|1`) runs inside the helper on its own serial queue: a 10 s tick,
+  sleep/wake notifications, and settings persisted root-owned under
+  `/Library/Application Support/OmniStats`. Fan and battery SMC calls share
+  one lock. The policy is a pure function (`batteryShouldInhibit`) covered by
+  `tests/helper_safety_tests.m`; every doubt resolves towards charging.
 
 ## Code style
 

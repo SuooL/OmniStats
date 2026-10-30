@@ -323,9 +323,71 @@ struct LogicTests {
         check(batterySampler.snapshot == charging && batterySampler.samplingInterval == 5, "Battery sampler publishes readings")
         batterySampler.setSamplingInterval(nil)
         check(batterySampler.samplingInterval == nil && batterySampler.snapshot == charging, "Pausing keeps the last reading")
+        let statusLine = "OK backend=chte enabled=1 limit=80 sailing=5 sleepstop=0 stayawake=1 topup=0 inhibited=1 percent=85 external=1 conflict=- writefailed=0"
+        let status = ChargeControlStatus(reply: statusLine)
+        check(status?.backend == .chte && status?.settings == ChargeLimitSettings(enabled: true, limit: 80, sailing: 5, sleepStop: false, stayAwake: true),
+              "Charge-control status parses settings")
+        check(status?.inhibited == true && status?.topUp == false && status?.conflict == nil && status?.writeFailed == false, "Charge-control state flags")
+        check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "conflict=-", with: "conflict=AlDente"))?.conflict == "AlDente",
+              "A running charge manager is reported by name")
+        check(ChargeControlStatus(reply: "ERR command") == nil && ChargeControlStatus(reply: "OK backend=chte") == nil
+              && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "backend=chte", with: "backend=magic")) == nil
+              && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "limit=80", with: "limit=eighty")) == nil,
+              "Old helpers and malformed status lines are not trusted")
+        let limitSettings = ChargeLimitSettings(enabled: true, limit: 75, sailing: 3, sleepStop: true, stayAwake: false)
+        check(limitSettings.command == "BSET enabled=1 limit=75 sailing=3 sleepstop=1 stayawake=0" && limitSettings.resumeAt == 72,
+              "Settings serialize to one BSET line")
+        let pmsetOutput = """
+        Battery level limits:
+        (
+                {
+                Terminated = 0;
+                chargeSocLimitDrain = 1;
+                chargeSocLimitOwner = 182;
+                chargeSocLimitReason = manualChargeLimit;
+                chargeSocLimitSoc = 85;
+            },
+                {
+                Terminated = 0;
+                chargeSocLimitOwner = 0;
+                chargeSocLimitReason = manualChargeLimit;
+                chargeSocLimitSoc = 90;
+            },
+                {
+                Terminated = 0;
+                chargeSocLimitReason = obc;
+                chargeSocLimitSoc = 80;
+            },
+                {
+                Terminated = 1;
+                chargeSocLimitReason = manualChargeLimit;
+                chargeSocLimitSoc = 60;
+            }
+        )
+        """
+        check(NativeChargeLimit.parse(pmsetOutput) == 85, "Native limit: lowest active manual limit, ignoring other reasons and ended ones")
+        check(NativeChargeLimit.parse("No battery level limits set\n") == nil && NativeChargeLimit.parse("") == nil, "No native limit")
+        var sentCommands: [String] = []
+        let chargeController = ChargeController(monitor: Monitor(startSampling: false), request: { command, completion in
+            sentCommands.append(command)
+            completion(command == "BSTATUS" ? statusLine : command.contains("limit=19") ? "ERR args" : "OK")
+        }, readNativeLimit: { 85 })
+        chargeController.setPollingInterval(5)
+        wait { chargeController.status != nil && chargeController.nativeLimit == 85 }
+        check(chargeController.status?.settings.limit == 80 && chargeController.pollingInterval == 5, "Charge control polls the helper and pmset")
+        chargeController.apply(limitSettings)
+        check(sentCommands.contains(limitSettings.command) && chargeController.lastError == nil, "Edits go to the helper as one BSET")
+        var rejected = limitSettings; rejected.limit = 19
+        chargeController.apply(rejected)
+        check(chargeController.lastError == "ERR args", "Helper rejections surface to the user")
+        chargeController.setTopUp(true)
+        check(sentCommands.last == "BSTATUS" && sentCommands.contains("BTOPUP 1") && chargeController.lastError == nil,
+              "Top Up is sent and the status refreshed")
+        chargeController.setPollingInterval(nil)
+        check(chargeController.pollingInterval == nil, "Hidden charge control stops polling")
         let desktop = BatterySampler(isPresent: false, read: { charging })
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing")
     }
 }

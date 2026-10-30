@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 private func watts(_ value: Double) -> String { String(format: "%.1f W", value) }
 private func signedWatts(_ value: Double) -> String {
@@ -45,18 +46,28 @@ private struct ChargeBar: View {
 // their height before the first reading so the panel never jumps on open.
 struct BatteryPanelSection: View {
     @ObservedObject var sampler: BatterySampler
+    @ObservedObject var charge: ChargeController
 
     var body: some View {
         let battery = sampler.snapshot
         let color = battery?.chargeColor ?? Theme.ink3
+        let limit = charge.status.flatMap { $0.settings.enabled && $0.conflict == nil && $0.backend != .none ? $0 : nil }
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: battery?.icon ?? "battery.0percent").font(.system(size: 12)).foregroundStyle(color)
                 Text(L.t("m.batteryCharge")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
                 if let battery {
-                    Text(battery.state.title).font(.system(size: 10)).foregroundStyle(Theme.ink3).lineLimit(1)
+                    let held = limit?.inhibited == true && battery.externalPower
+                    Text(held ? L.t("b.state.held") : battery.state.title)
+                        .font(.system(size: 10)).foregroundStyle(Theme.ink3).lineLimit(1)
                 }
                 Spacer(minLength: 4)
+                if let limit {
+                    Text(L.f("m.limitChip", limit.topUp ? 100 : limit.settings.limit))
+                        .font(Theme.telemetry(9)).foregroundStyle(Theme.ink3)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
+                }
                 Text(battery?.percent.map { "\($0)%" } ?? "—").font(Theme.telemetry(12)).foregroundStyle(color)
             }
             ChargeBar(fraction: Double(battery?.percent ?? 0) / 100, color: color).frame(height: 3)
@@ -92,6 +103,8 @@ struct BatteryPanelSection: View {
 struct BatteryPane: View {
     @ObservedObject var sampler: BatterySampler
     @ObservedObject var store: ConfigStore
+    let mon: Monitor
+    let charge: ChargeController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -101,6 +114,7 @@ struct BatteryPane: View {
             }
             if let battery = sampler.snapshot {
                 status(battery)
+                ChargeControlCard(control: charge, mon: mon, external: battery.externalPower)
                 HStack(alignment: .top, spacing: 18) {
                     flow(battery)
                     health(battery)
@@ -201,5 +215,134 @@ struct BatteryPane: View {
         .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
         .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+    }
+}
+
+// Settings card for the helper's charge limit. Edits go straight to the helper;
+// the slider sends its value on release rather than on every step.
+struct ChargeControlCard: View {
+    @ObservedObject var control: ChargeController
+    @ObservedObject var mon: Monitor
+    let external: Bool
+    @State private var draggedLimit: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L.t("cc.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+            if !mon.helperSupportsBattery {
+                helperRow
+            } else if let status = control.status {
+                controls(status)
+            } else {
+                note(L.t("b.loading"))
+            }
+            if let error = control.lastError { alert(L.f("cc.error", error), .red) }
+        }
+        .padding(16).frame(maxWidth: 640, alignment: .leading)
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+        .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+        .onChange(of: control.status?.settings.limit) { _ in draggedLimit = nil }
+    }
+
+    private var helperRow: some View {
+        HStack(spacing: 10) {
+            note(L.t("cc.needsHelper"))
+            Spacer()
+            Button { mon.enableControl() } label: {
+                HStack {
+                    if mon.busy { ProgressView().controlSize(.small) }
+                    Text(L.t(mon.helperNeedsUpdate ? "control.updateShort" : "cc.install"))
+                }
+            }.buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(mon.busy)
+        }
+    }
+
+    @ViewBuilder private func controls(_ status: ChargeControlStatus) -> some View {
+        let settings = status.settings
+        let usable = status.backend != .none && status.conflict == nil
+        toggle(L.t("cc.enable"), settings.enabled) { var s = settings; s.enabled = $0; control.apply(s) }
+            .disabled(!usable && !settings.enabled)
+        if status.backend == .none {
+            HStack(alignment: .top, spacing: 10) {
+                alert(L.t("cc.unsupported"), .orange)
+                Spacer()
+                openBatterySettings
+            }
+        }
+        if let conflict = status.conflict { alert(L.f("cc.conflict", conflict), .orange) }
+        if settings.enabled && usable {
+            let shown = Int(draggedLimit ?? Double(settings.limit))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L.f("cc.stopAt", shown)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                Slider(value: Binding(get: { draggedLimit ?? Double(settings.limit) }, set: { draggedLimit = $0 }),
+                       in: Double(ChargeLimitSettings.limitRange.lowerBound)...Double(ChargeLimitSettings.limitRange.upperBound),
+                       step: 5, onEditingChanged: { editing in
+                    guard !editing, let value = draggedLimit, Int(value) != settings.limit else { return }
+                    var s = settings; s.limit = Int(value); control.apply(s)
+                })
+                .tint(Theme.accent)
+            }
+            Stepper(value: Binding(get: { settings.sailing }, set: { var s = settings; s.sailing = $0; control.apply(s) }),
+                    in: ChargeLimitSettings.sailingRange) {
+                Text(L.f("cc.resumeAt", settings.resumeAt)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+            }
+            .help(L.t("cc.resumeHelp"))
+            nativeLimitNote(settings.limit)
+            Text(stateText(status)).font(.system(size: 11)).foregroundStyle(Theme.ink2)
+            if external { topUpRow(status) }
+            Divider().overlay(Theme.line)
+            toggle(L.t("cc.sleepStop"), settings.sleepStop) { var s = settings; s.sleepStop = $0; control.apply(s) }
+                .help(L.t("cc.sleepStopHelp"))
+            toggle(L.t("cc.stayAwake"), settings.stayAwake) { var s = settings; s.stayAwake = $0; control.apply(s) }
+        }
+        if status.writeFailed { alert(L.t("cc.writeFailed"), .red) }
+    }
+
+    @ViewBuilder private func nativeLimitNote(_ limit: Int) -> some View {
+        if let native = control.nativeLimit, native < limit {
+            HStack(alignment: .top, spacing: 10) {
+                alert(L.f("cc.nativeBelow", native, limit), .orange)
+                Spacer()
+                openBatterySettings
+            }
+        } else if let native = control.nativeLimit, native < 100 {
+            note(L.f("cc.nativeSafety", native))
+        }
+    }
+
+    private func stateText(_ status: ChargeControlStatus) -> String {
+        if status.topUp { return L.t("cc.toppingUp") }
+        if status.inhibited { return L.f("cc.paused", status.settings.limit) }
+        return external ? L.f("cc.chargingTo", status.settings.limit) : L.t("cc.onBattery")
+    }
+
+    @ViewBuilder private func topUpRow(_ status: ChargeControlStatus) -> some View {
+        HStack(spacing: 10) {
+            Button(L.t(status.topUp ? "cc.cancelTopUp" : "cc.topUp")) { control.setTopUp(!status.topUp) }
+                .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+            if status.topUp, let native = control.nativeLimit, native < 100 { note(L.f("cc.topUpNative", native)) }
+        }
+    }
+
+    private var openBatterySettings: some View {
+        Button(L.t("cc.openBattery")) {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        .buttonStyle(.bordered).controlSize(.small)
+    }
+    private func toggle(_ label: String, _ value: Bool, _ set: @escaping (Bool) -> Void) -> some View {
+        Toggle(isOn: Binding(get: { value }, set: set)) {
+            Text(label).font(.system(size: 12)).foregroundStyle(Theme.ink)
+        }
+        .toggleStyle(.themed)
+    }
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+    }
+    private func alert(_ text: String, _ color: Color) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
     }
 }

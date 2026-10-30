@@ -11,10 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let activity = ActivityState()
     let resources = ResourceSampler()
     let battery = BatterySampler()
+    lazy var charge = ChargeController(monitor: monitor)
     lazy var engine = Engine(monitor: monitor, store: store)
     private lazy var sampling = SamplingCoordinator(monitor: monitor, net: net, proc: proc,
         netProc: netProc, engine: engine, store: store, activity: activity, resources: resources,
-        battery: battery)
+        battery: battery, charge: charge)
 
     // Sparkle: start the updater immediately; scheduled checks + UI are driven by
     // the SU* keys in Info.plist. `updater` is a thin SwiftUI wrapper for Settings.
@@ -31,11 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = engine   // start the control loop
 
         let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
-                                                activity: activity, battery: battery)
+                                                activity: activity, battery: battery, charge: charge)
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
-            activity: activity, resources: resources, battery: battery,
+            activity: activity, resources: resources, battery: battery, charge: charge,
             onOpenSettings: { settings.show() })
         _ = sampling
 

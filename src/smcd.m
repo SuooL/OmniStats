@@ -1,9 +1,14 @@
-// Privileged fan-control helper, protocol 3. Only SET/HB renew the manual-mode
-// watchdog; PING, VERSION and malformed traffic cannot keep stale control alive.
-// A certificate-signed helper only serves the app signed by that same certificate.
+// Privileged fan and battery helper, protocol 4. Only SET/HB renew the manual-mode
+// watchdog; PING, VERSION, battery commands and malformed traffic cannot keep
+// stale fan control alive. A certificate-signed helper only serves the app
+// signed by that same certificate.
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <IOKit/pwr_mgt/IOPMLib.h>
+#import <IOKit/IOMessage.h>
+#import <libproc.h>
+#import <pthread.h>
 #import <sys/socket.h>
 #import <sys/un.h>
 #import <sys/stat.h>
@@ -23,14 +28,19 @@ static int gManual[MAX_FANS] = {0};
 static volatile sig_atomic_t gStop = 0;
 static int gSignedHelper = 0;
 static SecRequirementRef gClientRequirement = NULL;
+// Fan commands run on the main thread and battery control on its own queue; one
+// lock keeps their SMC calls (and smc.h's key cache) from interleaving.
+static pthread_mutex_t gSMCLock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+static void smcLock(void) { pthread_mutex_lock(&gSMCLock); }
+static void smcUnlock(void) { pthread_mutex_unlock(&gSMCLock); }
 
 static double nowSeconds(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec + t.tv_nsec / 1e9;
 }
 static int autoFan(int fan) {
-    char key[8]; smcFanModeKey(key, fan);
-    int result = smcWriteU8(key, 0);
+    char key[8];
+    smcLock(); smcFanModeKey(key, fan); int result = smcWriteU8(key, 0); smcUnlock();
     // Keep retrying if firmware did not acknowledge the automatic-mode write.
     gManual[fan] = result != 0;
     return result == 0 ? 0 : -1;
@@ -44,7 +54,7 @@ static int anyManual(void) {
     for(int i = 0; i < gFanCount; i++) if(gManual[i]) return 1;
     return 0;
 }
-static int setFan(int fan, float rpm) {
+static int setFanLocked(int fan, float rpm) {
     if(fan < 0 || fan >= gFanCount || !isfinite(rpm)) return -1;
     char minimumKey[8], maximumKey[8], modeKey[8], targetKey[8];
     smcFanKey(minimumKey, fan, "Mn"); smcFanKey(maximumKey, fan, "Mx");
@@ -56,6 +66,10 @@ static int setFan(int fan, float rpm) {
     gManual[fan] = 1;
     if(smcWriteFloat(targetKey, rpm)) { autoFan(fan); return -3; }
     return (int)rpm;
+}
+static int setFan(int fan, float rpm) {
+    smcLock(); int result = setFanLocked(fan, rpm); smcUnlock();
+    return result;
 }
 static int peerAllowed(int fd) {
     uid_t uid; gid_t gid; struct stat console;
@@ -134,6 +148,249 @@ static int sendReply(int fd, const char *reply) {
     }
     return 0;
 }
+// ---- Battery charge control ----------------------------------------------
+// The policy runs here rather than in the app, so it keeps working after the app
+// quits and around sleep. Doubt resolves towards charging: an unreadable battery,
+// another charge manager or helper exit all allow charging again.
+typedef enum { BatteryBackendNone = 0, BatteryBackendCHTE, BatteryBackendCH0BC } BatteryBackend;
+typedef struct { int enabled, limit, sailing, sleepStop, stayAwake; } BatteryConfig;
+typedef struct { int valid, percent, external; } BatteryReading;
+
+static const BatteryConfig kBatteryDefaults = {0, 80, 5, 0, 0};
+static BatteryConfig gBattery = {0, 80, 5, 0, 0};
+static BatteryBackend gBackend = BatteryBackendNone;
+static int gInhibited = 0;      // what the SMC holds: read at start, then our own writes
+static int gTopUp = 0;          // charge past the limit until the adapter is removed
+static int gWriteFailed = 0;
+static int gBatteryStopping = 0;  // set once on exit: nothing may pause charging after the release
+static BatteryReading gLastReading = {0, 0, 0};
+static char gConflict[32] = "";
+static const char *gBatteryConfigPath = "/Library/Application Support/OmniStats/battery.plist";
+static dispatch_queue_t gBatteryQueue = NULL;
+static dispatch_source_t gBatteryTimer = NULL;
+static io_connect_t gRootPort = 0;
+
+// Stop at the limit; resume only once the charge falls to limit - sailing.
+static int batteryShouldInhibit(BatteryConfig config, BatteryReading reading, int topUp, int inhibited) {
+    if(!config.enabled || topUp || config.limit >= 100 || !reading.valid) return 0;
+    if(reading.percent >= config.limit) return 1;
+    if(reading.percent <= config.limit - config.sailing) return 0;
+    return inhibited;
+}
+static int batteryConfigValid(BatteryConfig c) {
+    return (c.enabled == 0 || c.enabled == 1) && (c.sleepStop == 0 || c.sleepStop == 1)
+        && (c.stayAwake == 0 || c.stayAwake == 1) && c.limit >= 20 && c.limit <= 100
+        && c.sailing >= 1 && c.sailing <= 20;
+}
+// "key=value ..." with every key optional; the update applies only if all of it is valid.
+static int parseBatterySet(const char *arguments, BatteryConfig *config) {
+    BatteryConfig c = *config;
+    char buffer[256];
+    if(strlcpy(buffer, arguments, sizeof(buffer)) >= sizeof(buffer)) return -1;
+    int count = 0;
+    char *save = NULL;
+    for(char *token = strtok_r(buffer, " ", &save); token; token = strtok_r(NULL, " ", &save)) {
+        char *equals = strchr(token, '=');
+        if(!equals) return -1;
+        *equals = 0;
+        char *end = NULL;
+        long value = strtol(equals + 1, &end, 10);
+        if(end == equals + 1 || *end || value < 0 || value > 100) return -1;
+        if(!strcmp(token, "enabled")) c.enabled = (int)value;
+        else if(!strcmp(token, "limit")) c.limit = (int)value;
+        else if(!strcmp(token, "sailing")) c.sailing = (int)value;
+        else if(!strcmp(token, "sleepstop")) c.sleepStop = (int)value;
+        else if(!strcmp(token, "stayawake")) c.stayAwake = (int)value;
+        else return -1;
+        count++;
+    }
+    if(!count || !batteryConfigValid(c)) return -1;
+    *config = c;
+    return 0;
+}
+
+// CHTE (current firmware) holds 01000000 to stop charging; older firmware uses
+// CH0B/CH0C = 02. Callers hold the SMC lock.
+static int readInhibit(BatteryBackend backend) {
+    unsigned char bytes[32]; unsigned int size = 0, type = 0;
+    if(backend == BatteryBackendCHTE) return smcReadBytes("CHTE", bytes, &size, &type) == 4 ? bytes[0] != 0 : -1;
+    if(backend == BatteryBackendCH0BC) return smcReadBytes("CH0C", bytes, &size, &type) == 1 ? bytes[0] != 0 : -1;
+    return -1;
+}
+static int writeInhibit(BatteryBackend backend, int inhibit) {
+    if(backend == BatteryBackendCHTE) {
+        unsigned char bytes[4] = {inhibit ? 1 : 0, 0, 0, 0};
+        return smcWriteBytes("CHTE", bytes, 4);
+    }
+    if(backend == BatteryBackendCH0BC) {
+        unsigned char value = inhibit ? 2 : 0;
+        return smcWriteBytes("CH0B", &value, 1) == 0 && smcWriteBytes("CH0C", &value, 1) == 0 ? 0 : -1;
+    }
+    return -1;
+}
+// Writing each key's current value back proves this firmware accepts our writes
+// without changing anything. Newer firmware rejects them as not privileged.
+static BatteryBackend probeBatteryBackend(void) {
+    unsigned char b[32], c[32]; unsigned int size = 0, type = 0;
+    if(smcReadBytes("CHTE", b, &size, &type) == 4 && smcWriteBytes("CHTE", b, 4) == 0) return BatteryBackendCHTE;
+    if(smcReadBytes("CH0B", b, &size, &type) == 1 && smcReadBytes("CH0C", c, &size, &type) == 1
+       && smcWriteBytes("CH0B", b, 1) == 0 && smcWriteBytes("CH0C", c, 1) == 0) return BatteryBackendCH0BC;
+    return BatteryBackendNone;
+}
+
+static int readBatteryRegistry(BatteryReading *out) {
+    *out = (BatteryReading){0, 0, 0};
+    io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
+    if(!service) return -1;
+    CFTypeRef current = IORegistryEntryCreateCFProperty(service, CFSTR("CurrentCapacity"), kCFAllocatorDefault, 0);
+    CFTypeRef maximum = IORegistryEntryCreateCFProperty(service, CFSTR("MaxCapacity"), kCFAllocatorDefault, 0);
+    CFTypeRef external = IORegistryEntryCreateCFProperty(service, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
+    IOObjectRelease(service);
+    int value = 0, full = 0;
+    if(current && CFGetTypeID(current) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)current, kCFNumberIntType, &value)
+       && maximum && CFGetTypeID(maximum) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)maximum, kCFNumberIntType, &full)
+       && external && CFGetTypeID(external) == CFBooleanGetTypeID() && full > 0 && value >= 0) {
+        out->valid = 1;
+        out->percent = value * 100 / full > 100 ? 100 : value * 100 / full;
+        out->external = CFBooleanGetValue((CFBooleanRef)external);
+    }
+    if(current) CFRelease(current);
+    if(maximum) CFRelease(maximum);
+    if(external) CFRelease(external);
+    return out->valid ? 0 : -1;
+}
+// Another charge manager writes the same keys; stand back while one runs.
+static int findBatteryConflict(char *name, size_t size) {
+    static const char *prefixes[][2] = {{"com.apphousekitchen.aldente", "AlDente"}, {"me.mhaeuser.batteryd", "Battery-Toolkit"}};
+    int capacity = proc_listallpids(NULL, 0);
+    if(capacity <= 0) return 0;
+    capacity += 32;
+    pid_t *pids = calloc((size_t)capacity, sizeof(pid_t));
+    if(!pids) return 0;
+    int count = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
+    int found = 0;
+    for(int i = 0; i < count && !found; i++) {
+        char path[PROC_PIDPATHINFO_MAXSIZE];
+        if(pids[i] <= 0 || proc_pidpath(pids[i], path, sizeof(path)) <= 0) continue;
+        const char *base = strrchr(path, '/');
+        base = base ? base + 1 : path;
+        if(!strcmp(base, "batt")) { strlcpy(name, "batt", size); found = 1; }
+        for(size_t k = 0; k < sizeof(prefixes) / sizeof(prefixes[0]) && !found; k++)
+            if(!strncmp(base, prefixes[k][0], strlen(prefixes[k][0]))) { strlcpy(name, prefixes[k][1], size); found = 1; }
+    }
+    free(pids);
+    return found;
+}
+static int (*gReadBattery)(BatteryReading *) = readBatteryRegistry;
+static int (*gFindConflict)(char *, size_t) = findBatteryConflict;
+
+static int readConfigValue(NSDictionary *dictionary, NSString *key, int fallback) {
+    id value = dictionary[key];
+    return [value isKindOfClass:NSNumber.class] ? [value intValue] : fallback;
+}
+static void loadBatteryConfig(void) {
+    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfFile:@(gBatteryConfigPath)];
+    BatteryConfig c = kBatteryDefaults;
+    if([saved isKindOfClass:NSDictionary.class]) {
+        c.enabled = readConfigValue(saved, @"enabled", c.enabled);
+        c.limit = readConfigValue(saved, @"limit", c.limit);
+        c.sailing = readConfigValue(saved, @"sailing", c.sailing);
+        c.sleepStop = readConfigValue(saved, @"sleepStop", c.sleepStop);
+        c.stayAwake = readConfigValue(saved, @"stayAwake", c.stayAwake);
+    }
+    gBattery = batteryConfigValid(c) ? c : kBatteryDefaults;
+}
+static int saveBatteryConfig(BatteryConfig c) {
+    NSString *path = @(gBatteryConfigPath);
+    [[NSFileManager defaultManager] createDirectoryAtPath:path.stringByDeletingLastPathComponent
+        withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0755} error:nil];
+    NSDictionary *values = @{@"enabled": @(c.enabled), @"limit": @(c.limit), @"sailing": @(c.sailing),
+                             @"sleepStop": @(c.sleepStop), @"stayAwake": @(c.stayAwake)};
+    return [values writeToURL:[NSURL fileURLWithPath:path] error:nil] ? 0 : -1;
+}
+
+static void batteryObserve(void) {
+    char conflict[32] = "";
+    gFindConflict(conflict, sizeof(conflict));
+    strlcpy(gConflict, conflict, sizeof(gConflict));
+    gReadBattery(&gLastReading);
+    if(gLastReading.valid && !gLastReading.external) gTopUp = 0;
+}
+// Runs on the battery queue: every 10 s, on wake and after each command. A
+// feature the user never turned on costs nothing and leaves the keys alone,
+// unless the charging pause in place is ours to release.
+static void batteryTick(void) {
+    if(gBatteryStopping || (!gBattery.enabled && !gInhibited)) return;
+    batteryObserve();
+    if(gBackend == BatteryBackendNone || gConflict[0]) return;
+    int want = batteryShouldInhibit(gBattery, gLastReading, gTopUp, gInhibited);
+    if(want == gInhibited) return;
+    smcLock(); gWriteFailed = writeInhibit(gBackend, want) != 0; smcUnlock();
+    if(!gWriteFailed) gInhibited = want;
+}
+// Idle sleep waits while charging up to the limit, so it stops exactly there.
+static int batteryKeepsAwake(void) {
+    return gBattery.enabled && gBattery.stayAwake && gBackend != BatteryBackendNone && !gConflict[0]
+        && !gTopUp && !gInhibited && gLastReading.valid && gLastReading.external
+        && gLastReading.percent < gBattery.limit;
+}
+// Asleep, nothing can stop charging at the limit, so optionally pause it first.
+static void batteryWillSleep(void) {
+    if(gBatteryStopping || !gBattery.enabled || !gBattery.sleepStop || gTopUp || gBattery.limit >= 100
+       || gBackend == BatteryBackendNone || gConflict[0] || gInhibited) return;
+    smcLock(); if(writeInhibit(gBackend, 1) == 0) gInhibited = 1; smcUnlock();
+}
+// Exit (uninstall, shutdown) never leaves charging switched off. Ticks already
+// queued behind this see gBatteryStopping and do nothing.
+static void batteryRelease(void) {
+    gBatteryStopping = 1;
+    if(gBatteryTimer) dispatch_source_cancel(gBatteryTimer);
+    if(!gInhibited || gBackend == BatteryBackendNone || gConflict[0]) return;
+    smcLock(); if(writeInhibit(gBackend, 0) == 0) gInhibited = 0; smcUnlock();
+}
+static void formatBatteryStatus(char *out, size_t size) {
+    static const char *backends[] = {"none", "chte", "ch0bc"};
+    snprintf(out, size, "OK backend=%s enabled=%d limit=%d sailing=%d sleepstop=%d stayawake=%d "
+             "topup=%d inhibited=%d percent=%d external=%d conflict=%s writefailed=%d\n",
+             backends[gBackend], gBattery.enabled, gBattery.limit, gBattery.sailing, gBattery.sleepStop,
+             gBattery.stayAwake, gTopUp, gInhibited, gLastReading.valid ? gLastReading.percent : -1,
+             gLastReading.external, gConflict[0] ? gConflict : "-", gWriteFailed);
+}
+static void onBattery(void (^block)(void)) {
+    if(gBatteryQueue) dispatch_sync(gBatteryQueue, block); else block();
+}
+
+static void powerCallback(void *context, io_service_t service, natural_t type, void *argument) {
+    (void)context; (void)service;
+    if(type == kIOMessageCanSystemSleep) {
+        if(batteryKeepsAwake()) IOCancelPowerChange(gRootPort, (long)argument);
+        else IOAllowPowerChange(gRootPort, (long)argument);
+    } else if(type == kIOMessageSystemWillSleep) {
+        batteryWillSleep();
+        IOAllowPowerChange(gRootPort, (long)argument);
+    } else if(type == kIOMessageSystemHasPoweredOn) {
+        batteryTick();
+    }
+}
+static void startBatteryControl(void) {
+    gBatteryQueue = dispatch_queue_create("com.omnistats.battery", DISPATCH_QUEUE_SERIAL);
+    dispatch_sync(gBatteryQueue, ^{
+        loadBatteryConfig();
+        smcLock(); gBackend = probeBatteryBackend(); int current = readInhibit(gBackend); smcUnlock();
+        gInhibited = current == 1;
+        batteryTick();
+    });
+    IONotificationPortRef port = NULL;
+    io_object_t notifier = 0;
+    gRootPort = IORegisterForSystemPower(NULL, &port, powerCallback, &notifier);
+    if(gRootPort) IONotificationPortSetDispatchQueue(port, gBatteryQueue);
+    gBatteryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gBatteryQueue);
+    dispatch_source_set_timer(gBatteryTimer, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
+                              10 * NSEC_PER_SEC, 2 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(gBatteryTimer, ^{ batteryTick(); });
+    dispatch_resume(gBatteryTimer);
+}
+
 // Return 1 only for valid manual-control heartbeats, 0 for other replies,
 // and -1 when the peer stopped reading. Parsing requires the full command.
 static int handleLine(int fd, const char *line) {
@@ -141,7 +398,7 @@ static int handleLine(int fd, const char *line) {
     int fan = -1, heartbeat = 0;
     float rpm;
     if(strcmp(line, "PING") == 0) strcpy(reply, "OK\n");
-    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 3\n");
+    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 4\n");
     else if(strcmp(line, "HB") == 0) { strcpy(reply, "OK\n"); heartbeat = 1; }
     else if(strcmp(line, "AUTOALL") == 0) strcpy(reply, autoAll() == 0 ? "OK\n" : "ERR auto\n");
     else if(sscanf(line, "AUTO %d %c", &fan, &extra) == 1 && strncmp(line, "AUTO ", 5) == 0) {
@@ -152,6 +409,7 @@ static int handleLine(int fd, const char *line) {
         else { snprintf(reply, sizeof(reply), "OK %d\n", applied); heartbeat = 1; }
     } else if(strcmp(line, "INFO") == 0) {
         size_t used = 0;
+        smcLock();
         for(int i = 0; i < gFanCount; i++) {
             char actual[8], minimum[8], maximum[8], target[8], mode[8];
             smcFanKey(actual,i,"Ac"); smcFanKey(minimum,i,"Mn"); smcFanKey(maximum,i,"Mx");
@@ -162,7 +420,28 @@ static int handleLine(int fd, const char *line) {
             if(count < 0 || (size_t)count >= sizeof(reply) - used - 5) break;
             used += (size_t)count;
         }
+        smcUnlock();
         snprintf(reply + used, sizeof(reply) - used, "END\n");
+    } else if(strcmp(line, "BSTATUS") == 0) {
+        char *out = reply;
+        onBattery(^{
+            if(!gBattery.enabled && !gInhibited) batteryObserve();  // idle ticks skip it
+            formatBatteryStatus(out, sizeof(reply));
+        });
+    } else if(strncmp(line, "BSET ", 5) == 0) {
+        __block int result = -1;
+        onBattery(^{
+            BatteryConfig update = gBattery;
+            if(parseBatterySet(line + 5, &update) != 0) return;
+            if(saveBatteryConfig(update) != 0) { result = -2; return; }
+            gBattery = update; result = 0;
+            batteryTick();
+        });
+        strcpy(reply, result == 0 ? "OK\n" : result == -2 ? "ERR save\n" : "ERR args\n");
+    } else if(strcmp(line, "BTOPUP 1") == 0 || strcmp(line, "BTOPUP 0") == 0) {
+        int enable = line[7] == '1';
+        onBattery(^{ gTopUp = enable; batteryTick(); });
+        strcpy(reply, "OK\n");
     } else strcpy(reply, "ERR command\n");
     return sendReply(fd, reply) == 0 ? heartbeat : -1;
 }
@@ -184,8 +463,10 @@ int main(void) {
     }
     chmod(SOCK_PATH, 0666); // Every command additionally checks the console user's uid.
     gClientRequirement = copyClientRequirement();
-    fprintf(stderr, "omnistats-smcd protocol 3: %d fans, %s clients\n", gFanCount,
-        !gSignedHelper ? "console-user" : gClientRequirement ? "signed" : "no (requirement unavailable)");
+    startBatteryControl();
+    static const char *backends[] = {"none", "chte", "ch0bc"};
+    fprintf(stderr, "omnistats-smcd protocol 4: %d fans, battery backend %s, %s clients\n", gFanCount,
+        backends[gBackend], !gSignedHelper ? "console-user" : gClientRequirement ? "signed" : "no (requirement unavailable)");
     while(!gStop) {
         struct pollfd listening = {server, POLLIN, 0};
         int result = poll(&listening, 1, anyManual() ? 2000 : -1);
@@ -222,6 +503,7 @@ int main(void) {
         }
         close(client); autoAll();
     }
-    autoAll(); close(server); unlink(SOCK_PATH);
+    autoAll(); onBattery(^{ batteryRelease(); });
+    close(server); unlink(SOCK_PATH);
     return 0;
 }

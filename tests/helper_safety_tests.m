@@ -11,10 +11,38 @@ static float smcReadFloat(const char *key) { return strstr(key,"Mn") ? minimumRP
 static int smcReadU8(const char *key) { return 2; }
 static int smcWriteU8(const char *key, unsigned char value) { modeWrites++; return value==0 && failAuto ? -1 : 0; }
 static int smcWriteFloat(const char *key, float value) { targetWrites++; targetRPM=value; return failTarget ? -1 : 0; }
+// In-memory charge-control keys: CHTE (current firmware) or CH0B/CH0C (older).
+static unsigned char chte[4], ch0b, ch0c;
+static int hasCHTE=1, hasCH0=0, failBatteryWrites, batteryWrites;
+static int smcReadBytes(const char *key, unsigned char *buffer, unsigned int *size, unsigned int *type) {
+    (void)type;
+    if(!strcmp(key,"CHTE") && hasCHTE) { memcpy(buffer,chte,4); *size=4; return 4; }
+    if(!strcmp(key,"CH0B") && hasCH0) { buffer[0]=ch0b; *size=1; return 1; }
+    if(!strcmp(key,"CH0C") && hasCH0) { buffer[0]=ch0c; *size=1; return 1; }
+    return -1;
+}
+static int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned int size) {
+    if(failBatteryWrites) return -3;
+    batteryWrites++;
+    if(!strcmp(key,"CHTE") && hasCHTE && size==4) { memcpy(chte,bytes,4); return 0; }
+    if(!strcmp(key,"CH0B") && hasCH0 && size==1) { ch0b=bytes[0]; return 0; }
+    if(!strcmp(key,"CH0C") && hasCH0 && size==1) { ch0c=bytes[0]; return 0; }
+    return -1;
+}
 #define COOLBAR_SMC_H
 #define main unused_helper_main
 #include "../src/smcd.m"
 #undef main
+
+static BatteryReading testReading;
+static char testConflict[32];
+static int testReadBattery(BatteryReading *out) { *out=testReading; return testReading.valid ? 0 : -1; }
+static int testFindConflict(char *name, size_t size) { strlcpy(name,testConflict,size); return testConflict[0]!=0; }
+static void command(int fd, int reader, const char *line, char *reply, size_t size) {
+    assert(handleLine(fd,line)==0);
+    ssize_t count=read(reader,reply,size-1);
+    assert(count>0); reply[count]=0;
+}
 
 int main(void) {
     gFanCount=2;
@@ -57,6 +85,84 @@ int main(void) {
     if(expect) assert(gSignedHelper && gClientRequirement && peerSigned(pair[0])==atoi(expect));
     else assert(!gSignedHelper && !gClientRequirement && peerSigned(pair[0])==1);
     close(pair[0]); close(pair[1]);
-    puts("PASS: nonfinite inputs, bounds, clamp, failed-auto retries, exact command parsing, watchdog heartbeat classification and client signature requirement");
+
+    // Battery charge control.
+    gReadBattery=testReadBattery; gFindConflict=testFindConflict;
+    BatteryConfig on={1,80,5,0,0}, off=on; off.enabled=0;
+    BatteryConfig full=on; full.limit=100;
+    assert(batteryShouldInhibit(on,(BatteryReading){1,80,1},0,0)==1);
+    assert(batteryShouldInhibit(on,(BatteryReading){1,78,1},0,1)==1 && batteryShouldInhibit(on,(BatteryReading){1,78,1},0,0)==0);
+    assert(batteryShouldInhibit(on,(BatteryReading){1,75,1},0,1)==0);
+    assert(batteryShouldInhibit(on,(BatteryReading){0,90,1},0,1)==0);
+    assert(batteryShouldInhibit(on,(BatteryReading){1,90,1},1,1)==0);
+    assert(batteryShouldInhibit(off,(BatteryReading){1,90,1},0,1)==0 && batteryShouldInhibit(full,(BatteryReading){1,100,1},0,1)==0);
+
+    BatteryConfig update=kBatteryDefaults;
+    assert(parseBatterySet("enabled=1 limit=75",&update)==0 && update.enabled==1 && update.limit==75 && update.sailing==5);
+    const char *invalid[]={"","limit","limit=","limit=19","limit=101","limit=80x","limit=-5","sailing=0","sailing=21",
+                           "enabled=2","stayawake=3","bogus=1","limit=80 extra"};
+    for(size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) {
+        BatteryConfig before=update;
+        assert(parseBatterySet(invalid[i],&update)==-1 && memcmp(&before,&update,sizeof(update))==0);
+    }
+
+    assert(probeBatteryBackend()==BatteryBackendCHTE);
+    failBatteryWrites=1; assert(probeBatteryBackend()==BatteryBackendNone); failBatteryWrites=0;
+    hasCHTE=0; hasCH0=1; assert(probeBatteryBackend()==BatteryBackendCH0BC);
+    gBackend=BatteryBackendCH0BC; assert(writeInhibit(gBackend,1)==0 && ch0b==2 && ch0c==2 && readInhibit(gBackend)==1);
+    assert(writeInhibit(gBackend,0)==0 && ch0b==0 && ch0c==0);
+    hasCH0=0; assert(probeBatteryBackend()==BatteryBackendNone);
+    hasCHTE=1;
+
+    gBackend=BatteryBackendCHTE; gInhibited=0; gBattery=off; batteryWrites=0;
+    testReading=(BatteryReading){1,90,1}; gLastReading=(BatteryReading){0,0,0};
+    strlcpy(testConflict,"AlDente",sizeof(testConflict));
+    batteryTick(); assert(batteryWrites==0 && !gLastReading.valid && !gConflict[0]);
+    testConflict[0]=0;
+    gBattery=on; batteryTick(); assert(chte[0]==1 && gInhibited==1 && batteryWrites==1);
+    batteryTick(); assert(batteryWrites==1);
+    testReading.percent=77; batteryTick(); assert(chte[0]==1);
+    testReading.percent=75; batteryTick(); assert(chte[0]==0 && gInhibited==0);
+    testReading.percent=82; strlcpy(testConflict,"AlDente",sizeof(testConflict)); batteryWrites=0;
+    batteryTick(); assert(batteryWrites==0 && !strcmp(gConflict,"AlDente"));
+    testConflict[0]=0; batteryTick(); assert(chte[0]==1 && !gConflict[0]);
+    gBattery=off; batteryTick(); assert(chte[0]==0 && gInhibited==0);
+    gBattery=on; failBatteryWrites=1; batteryTick(); assert(gInhibited==0 && gWriteFailed);
+    failBatteryWrites=0; batteryTick(); assert(gInhibited==1 && !gWriteFailed);
+    testReading.valid=0; batteryTick(); assert(chte[0]==0); testReading.valid=1; batteryTick();
+    gTopUp=1; batteryTick(); assert(chte[0]==0);
+    testReading.external=0; batteryTick(); assert(gTopUp==0);
+    testReading.external=1; batteryTick(); assert(chte[0]==1);
+    testReading.percent=70; batteryTick(); assert(chte[0]==0);
+    gBattery.stayAwake=1; assert(batteryKeepsAwake());
+    batteryWillSleep(); assert(chte[0]==0);
+    gBattery.sleepStop=1; batteryWillSleep(); assert(chte[0]==1 && gInhibited==1 && !batteryKeepsAwake());
+    batteryRelease(); assert(chte[0]==0 && gInhibited==0 && gBatteryStopping);
+    testReading.percent=90; batteryTick(); batteryWillSleep(); assert(chte[0]==0);
+    gBatteryStopping=0;
+
+    char directory[]="/tmp/omnistats-battery-XXXXXX";
+    assert(mkdtemp(directory));
+    char configPath[256]; snprintf(configPath,sizeof(configPath),"%s/battery.plist",directory);
+    gBatteryConfigPath=configPath;
+    gBattery=kBatteryDefaults; testReading=(BatteryReading){1,70,1};
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
+    char reply[1024];
+    command(pair[0],pair[1],"BSET enabled=1 limit=70 sailing=3",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n"));
+    command(pair[0],pair[1],"BSET limit=10",reply,sizeof(reply)); assert(!strcmp(reply,"ERR args\n") && gBattery.limit==70);
+    gBattery=kBatteryDefaults; loadBatteryConfig();
+    assert(gBattery.enabled==1 && gBattery.limit==70 && gBattery.sailing==3);
+    command(pair[0],pair[1],"BSTATUS",reply,sizeof(reply));
+    const char *expected="OK backend=chte enabled=1 limit=70 sailing=3 sleepstop=0 stayawake=0 topup=0 inhibited=1 percent=70 external=1 conflict=- writefailed=0\n";
+    assert(!strcmp(reply,expected));
+    command(pair[0],pair[1],"BTOPUP 1",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gTopUp==1);
+    command(pair[0],pair[1],"BTOPUP 2",reply,sizeof(reply)); assert(!strcmp(reply,"ERR command\n"));
+    FILE *corrupt=fopen(configPath,"w"); fputs("<plist><dict><key>limit</key><integer>5</integer></dict></plist>",corrupt); fclose(corrupt);
+    loadBatteryConfig(); assert(memcmp(&gBattery,&kBatteryDefaults,sizeof(gBattery))==0);
+    gBatteryConfigPath="/System/omnistats-battery.plist";
+    command(pair[0],pair[1],"BSET limit=60",reply,sizeof(reply)); assert(!strcmp(reply,"ERR save\n") && gBattery.limit==80);
+    close(pair[0]); close(pair[1]);
+    unlink(configPath); rmdir(directory);
+    puts("PASS: nonfinite inputs, bounds, clamp, failed-auto retries, exact command parsing, watchdog heartbeat classification, client signature requirement and battery charge control");
     return 0;
 }
