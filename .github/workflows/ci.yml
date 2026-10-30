@@ -28,6 +28,11 @@ jobs:
           test -f dist/OmniStats.app/Contents/Resources/omnistats-smcd
           test -f build/omnistats-smcd
           test -x dist/OmniStats.app/Contents/Resources/omnistats-nettop
+          # LSMinimumSystemVersion is 13.0; every binary must actually load there.
+          for binary in MacOS/OmniStats Resources/omnistats-smcd Resources/omnistats-nettop; do
+            otool -l "dist/OmniStats.app/Contents/$binary" | grep -A4 LC_BUILD_VERSION | grep -q "minos 13.0" \
+              || { echo "::error::$binary does not target macOS 13.0"; exit 1; }
+          done
 
       - name: Package artifact
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip

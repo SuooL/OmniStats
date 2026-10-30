@@ -13,6 +13,9 @@ SWIFTC     := swiftc
 OBJC_FLAGS := -fobjc-arc -mmacosx-version-min=13.0
 C_FRAMEWORKS := -framework Foundation -framework IOKit -framework CoreFoundation
 SWIFT_FRAMEWORKS := -framework Cocoa -framework IOKit -framework CoreFoundation
+# Without an explicit target, swiftc builds for the host OS (e.g. macOS 26), and
+# the binary then refuses to launch on older systems despite LSMinimumSystemVersion.
+SWIFT_TARGET := -target arm64-apple-macos13.0
 
 # Code signing. The default "-" signs ad-hoc, which is fine for development and
 # CI, but macOS ties privacy grants to that exact build. Releases sign with one
@@ -58,7 +61,7 @@ sparkle: $(SPARKLE_FW)
 # --- SwiftUI menu-bar app binary ---
 SWIFT_SRCS := $(wildcard $(SRC)/*.swift)
 $(BUILD)/$(APP): $(SWIFT_SRCS) $(BUILD)/sensors.o $(BUILD)/control.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(SWIFT_SRCS) \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(SWIFT_SRCS) \
 	  $(BUILD)/sensors.o $(BUILD)/control.o \
 	  -import-objc-header $(SRC)/bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle \
@@ -136,7 +139,7 @@ $(BUILD)/hardware_stubs.o: tests/hardware_stubs.c tests/hardware_stubs.h $(SRC)/
 	$(CLANG) -I $(SRC) -c $< -o $@
 
 $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift $(BUILD)/hardware_stubs.o $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/RuntimeTests.swift \
 	  $(BUILD)/hardware_stubs.o -import-objc-header $(SRC)/bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
@@ -145,7 +148,7 @@ test-runtime: $(BUILD)/runtime-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/runtime-tests
 
 $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift tests/test_bridge.h tests/hardware_stubs.h $(BUILD)/hardware_stubs.o $(SPARKLE_FW) | $(BUILD)
-	$(SWIFTC) -O -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \
 	  $(BUILD)/hardware_stubs.o -import-objc-header tests/test_bridge.h \
 	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
 	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
