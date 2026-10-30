@@ -59,7 +59,9 @@ struct BatteryPanelSection: View {
                 if let battery {
                     let held = limit?.inhibited == true && battery.externalPower
                     let hot = limit?.heatHeld == true && battery.externalPower
-                    Text(hot ? L.t("b.state.heat") : held ? L.t("b.state.held") : battery.state.title)
+                    let discharging = charge.status?.adapterCut == true
+                    Text(discharging ? L.t("b.state.adapterPaused") : hot ? L.t("b.state.heat")
+                         : held ? L.t("b.state.held") : battery.state.title)
                         .font(.system(size: 10)).foregroundStyle(Theme.ink3).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -117,6 +119,7 @@ struct BatteryPane: View {
                 status(battery)
                 ChargeControlCard(control: charge, mon: mon, external: battery.externalPower,
                                   fahrenheit: store.config.fahrenheit)
+                DischargeCard(control: charge)
                 ChargeScheduleCard(store: store)
                 HStack(alignment: .top, spacing: 18) {
                     flow(battery)
@@ -491,5 +494,110 @@ struct ChargeScheduleCard: View {
     }
     private func note(_ text: String) -> some View {
         Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// Discharging and calibration pause the power adapter, so they live in their own
+// card with the safety note up front. Hidden on Macs without the adapter key.
+struct DischargeCard: View {
+    @ObservedObject var control: ChargeController
+    @State private var target = 80
+    @State private var confirmCalibration = false
+
+    var body: some View {
+        if let status = control.status, status.adapterSupported {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L.t("dc.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                note(L.t("dc.note"))
+                if let conflict = status.conflict {
+                    alert(L.f("cc.conflict", conflict), .orange)
+                } else {
+                    content(status)
+                }
+            }
+            .padding(16).frame(maxWidth: 640, alignment: .leading)
+            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+            .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+            .alert(L.t("dc.calibrateTitle"), isPresented: $confirmCalibration) {
+                Button(L.t("dc.calibrateStart")) { control.calibrate(true) }
+                Button(L.t("dc.cancel"), role: .cancel) {}
+            } message: {
+                Text(L.t("dc.calibrateBody"))
+            }
+        }
+    }
+
+    @ViewBuilder private func content(_ status: ChargeControlStatus) -> some View {
+        let settings = status.settings
+        if settings.enabled && settings.limit < 100 {
+            Toggle(isOn: Binding(get: { settings.autoDischarge },
+                                 set: { var s = settings; s.autoDischarge = $0; control.apply(s) })) {
+                Text(L.t("dc.auto")).font(.system(size: 12)).foregroundStyle(Theme.ink)
+            }
+            .toggleStyle(.themed)
+        }
+        if !status.plugged { note(L.t("dc.needsPlug")) }
+        Divider().overlay(Theme.line)
+        if status.calibration != .idle {
+            calibrationRow(status)
+        } else if let manual = status.dischargeTarget {
+            activeRow(L.f("dc.active", manual)) { control.discharge(to: nil) }
+        } else if status.adapterCut {
+            note(L.f("dc.activeAuto", settings.limit))
+        } else {
+            HStack(spacing: 10) {
+                Stepper(value: $target, in: 10...95, step: 5) {
+                    Text(L.f("dc.target", target)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                }
+                Spacer()
+                Button(L.t("dc.start")) { control.discharge(to: target) }
+                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                    .disabled(!status.plugged)
+            }
+            calibrationStart(status)
+        }
+    }
+
+    private func calibrationRow(_ status: ChargeControlStatus) -> some View {
+        let holdLeft = max(0, Int((3600 - status.calibrationElapsed) / 60))
+        let text: String
+        switch status.calibration {
+        case .charge1: text = L.t("dc.phase.charge1")
+        case .hold1: text = L.f("dc.phase.hold1", holdLeft)
+        case .discharge: text = L.t("dc.phase.discharge")
+        case .charge2: text = L.t("dc.phase.charge2")
+        case .hold2: text = L.f("dc.phase.hold2", holdLeft)
+        case .toLimit: text = L.t("dc.phase.toLimit")
+        case .idle: text = ""
+        }
+        return activeRow(L.t("dc.calibrating") + " · " + text) { control.calibrate(false) }
+    }
+
+    @ViewBuilder private func calibrationStart(_ status: ChargeControlStatus) -> some View {
+        let native = control.nativeLimit ?? 100
+        HStack(spacing: 10) {
+            Button(L.t("dc.calibrate")) { confirmCalibration = true }
+                .buttonStyle(.bordered).controlSize(.small)
+                .disabled(!status.plugged || native < 100)
+            if status.calibrationResult == 1 { note(L.t("dc.resultDone")) }
+            if status.calibrationResult == 2 { note(L.t("dc.resultStopped")) }
+        }
+        if native < 100 { alert(L.f("dc.needsNative100", native), .orange) }
+    }
+
+    private func activeRow(_ text: String, stop: @escaping () -> Void) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(text).font(.system(size: 12)).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button(L.t("dc.stop"), action: stop).buttonStyle(.bordered).controlSize(.small)
+        }
+    }
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+    }
+    private func alert(_ text: String, _ color: Color) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
     }
 }

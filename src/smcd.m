@@ -1,4 +1,4 @@
-// Privileged fan and battery helper, protocol 5. Only SET/HB renew the manual-mode
+// Privileged fan and battery helper, protocol 6. Only SET/HB renew the manual-mode
 // watchdog; PING, VERSION, battery commands and malformed traffic cannot keep
 // stale fan control alive. A certificate-signed helper only serves the app
 // signed by that same certificate.
@@ -155,12 +155,32 @@ static int sendReply(int fd, const char *reply) {
 typedef enum { BatteryBackendNone = 0, BatteryBackendCHTE, BatteryBackendCH0BC } BatteryBackend;
 // ledMode: 0 leaves the MagSafe LED to macOS, 1 shows charging (orange) or not
 // (green), 2 turns it off. heatLimit is in °C.
-typedef struct { int enabled, limit, sailing, sleepStop, stayAwake, heatProtect, heatLimit, ledMode; } BatteryConfig;
-// temperature is in 0.01 °C, 0 when unknown.
-typedef struct { int valid, percent, external, charging, temperature; } BatteryReading;
+// autoDischarge runs a plugged-in Mac from its battery down to the limit.
+typedef struct { int enabled, limit, sailing, sleepStop, stayAwake, heatProtect, heatLimit, ledMode, autoDischarge; } BatteryConfig;
+// temperature is in 0.01 °C, 0 when unknown. plugged is the physical adapter
+// (SMC AC-W), which stays true while we cut the adapter; external is what macOS
+// reports and reads false then.
+typedef struct { int valid, percent, external, charging, temperature, plugged; } BatteryReading;
 
-static const BatteryConfig kBatteryDefaults = {0, 80, 5, 0, 0, 0, 40, 0};
-static BatteryConfig gBattery = {0, 80, 5, 0, 0, 0, 40, 0};
+static const BatteryConfig kBatteryDefaults = {0, 80, 5, 0, 0, 0, 40, 0, 0};
+static BatteryConfig gBattery = {0, 80, 5, 0, 0, 0, 40, 0, 0};
+
+// Adapter cut-off (CHIE = 08 runs the Mac from its battery while plugged in).
+// It is the one fail-dangerous control here: a forgotten cut drains a plugged-in
+// Mac, so every exit path restores it.
+#define DISCHARGE_FLOOR 10          // never discharge below this percentage
+#define DISCHARGE_MAX_SEC (8 * 3600)
+#define CAL_LOW 15
+#define CAL_HOLD_SEC 3600
+#define CAL_CHARGE_MAX_SEC (6 * 3600)
+enum { CalIdle = 0, CalCharge1, CalHold1, CalDischarge, CalCharge2, CalHold2, CalToLimit };
+static int gAdapterSupported = 0;
+static int gAdapterCut = 0;         // what we wrote to CHIE
+static int gDischargeTarget = 0;    // manual session target, 0 = none
+static double gDischargeDeadline = 0;
+static int gCalPhase = CalIdle;
+static double gCalPhaseStart = 0;   // wall clock, survives sleep and restarts
+static int gCalResult = 0;          // 0 none, 1 finished, 2 stopped early
 static BatteryBackend gBackend = BatteryBackendNone;
 static int gInhibited = 0;      // what the SMC holds: read at start, then our own writes
 static int gTopUp = 0;          // charge past the limit until the adapter is removed
@@ -170,7 +190,7 @@ static int gLedSupported = 0;   // the Mac has a MagSafe LED key
 static int gLedOwned = 0;       // we changed the LED and must hand it back
 static int gLedValue = -1;      // what we last wrote; -1 forces the next write
 static int gBatteryStopping = 0;  // set once on exit: nothing may pause charging after the release
-static BatteryReading gLastReading = {0, 0, 0, 0, 0};
+static BatteryReading gLastReading = {0, 0, 0, 0, 0, 0};
 static char gConflict[32] = "";
 static const char *gBatteryConfigPath = "/Library/Application Support/OmniStats/battery.plist";
 static dispatch_queue_t gBatteryQueue = NULL;
@@ -203,7 +223,42 @@ static int batteryConfigValid(BatteryConfig c) {
     return (c.enabled == 0 || c.enabled == 1) && (c.sleepStop == 0 || c.sleepStop == 1)
         && (c.stayAwake == 0 || c.stayAwake == 1) && c.limit >= 20 && c.limit <= 100
         && c.sailing >= 1 && c.sailing <= 20 && (c.heatProtect == 0 || c.heatProtect == 1)
-        && c.heatLimit >= 30 && c.heatLimit <= 50 && c.ledMode >= 0 && c.ledMode <= 2;
+        && c.heatLimit >= 30 && c.heatLimit <= 50 && c.ledMode >= 0 && c.ledMode <= 2
+        && (c.autoDischarge == 0 || c.autoDischarge == 1);
+}
+static int calibrationCharging(int phase) {
+    return phase == CalCharge1 || phase == CalHold1 || phase == CalCharge2 || phase == CalHold2;
+}
+// Calibration: full -> hold 1 h -> 15 % -> full -> hold 1 h -> back to the limit.
+// Returns the next phase, or -1 to stop early (unplugged, or a phase overran).
+static int calibrationNext(int phase, BatteryReading r, double elapsed, BatteryConfig c) {
+    if(phase == CalIdle || !r.valid) return phase;
+    if(!r.plugged) return -1;
+    switch(phase) {
+    case CalCharge1: case CalCharge2:
+        if(r.percent >= 100) return phase + 1;
+        return elapsed > CAL_CHARGE_MAX_SEC ? -1 : phase;
+    case CalHold1: return elapsed >= CAL_HOLD_SEC ? CalDischarge : phase;
+    case CalHold2: return elapsed >= CAL_HOLD_SEC ? (c.enabled && c.limit < 100 ? CalToLimit : CalIdle) : phase;
+    case CalDischarge:
+        if(r.percent <= CAL_LOW) return CalCharge2;
+        return elapsed > DISCHARGE_MAX_SEC ? -1 : phase;
+    case CalToLimit: return r.percent <= c.limit || elapsed > DISCHARGE_MAX_SEC ? CalIdle : phase;
+    }
+    return CalIdle;
+}
+// The discharge target in effect, 0 for none. Calibration's charging phases never cut.
+static int batteryDischargeTarget(BatteryConfig c, BatteryReading r, int manualTarget, int calPhase) {
+    if(calPhase == CalDischarge) return CAL_LOW;
+    if(calPhase == CalToLimit) return c.limit;
+    if(calPhase != CalIdle) return 0;
+    if(manualTarget) return manualTarget;
+    if(c.enabled && c.autoDischarge && c.limit < 100 && r.valid && r.percent > c.limit) return c.limit;
+    return 0;
+}
+// Cut only while the adapter is physically plugged in and the battery is above target.
+static int batteryWantsCut(BatteryReading r, int target) {
+    return r.valid && r.plugged && target >= DISCHARGE_FLOOR && r.percent > target;
 }
 // "key=value ..." with every key optional; the update applies only if all of it is valid.
 static int parseBatterySet(const char *arguments, BatteryConfig *config) {
@@ -227,6 +282,7 @@ static int parseBatterySet(const char *arguments, BatteryConfig *config) {
         else if(!strcmp(token, "heat")) c.heatProtect = (int)value;
         else if(!strcmp(token, "heatlimit")) c.heatLimit = (int)value;
         else if(!strcmp(token, "led")) c.ledMode = (int)value;
+        else if(!strcmp(token, "autodischarge")) c.autoDischarge = (int)value;
         else return -1;
         count++;
     }
@@ -264,8 +320,19 @@ static BatteryBackend probeBatteryBackend(void) {
     return BatteryBackendNone;
 }
 
+// CHIE plus AC-W (to tell a real unplug from our own cut). A cut left over from
+// a crash is restored here, unless another charge manager may own it. Callers
+// hold the SMC lock.
+static int probeAdapter(int mayRestore) {
+    unsigned char chie[32], acw[32]; unsigned int size = 0, type = 0;
+    if(smcReadBytes("CHIE", chie, &size, &type) != 1 || smcReadBytes("AC-W", acw, &size, &type) != 1) return 0;
+    if(chie[0] != 0 && !mayRestore) return 0;
+    unsigned char connected = 0x00;
+    return smcWriteBytes("CHIE", &connected, 1) == 0;
+}
+
 static int readBatteryRegistry(BatteryReading *out) {
-    *out = (BatteryReading){0, 0, 0, 0, 0};
+    *out = (BatteryReading){0, 0, 0, 0, 0, 0};
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
     if(!service) return -1;
     CFTypeRef current = IORegistryEntryCreateCFProperty(service, CFSTR("CurrentCapacity"), kCFAllocatorDefault, 0);
@@ -315,7 +382,14 @@ static int findBatteryConflict(char *name, size_t size) {
     free(pids);
     return found;
 }
+// SMC AC-W > 0 while an adapter is physically connected, even with CHIE cutting
+// it; -1 when the key is missing. Callers hold the SMC lock.
+static int readPluggedSMC(void) {
+    unsigned char bytes[32]; unsigned int size = 0, type = 0;
+    return smcReadBytes("AC-W", bytes, &size, &type) == 1 ? (signed char)bytes[0] > 0 : -1;
+}
 static int (*gReadBattery)(BatteryReading *) = readBatteryRegistry;
+static int (*gReadPlugged)(void) = readPluggedSMC;
 static int (*gFindConflict)(char *, size_t) = findBatteryConflict;
 
 static int readConfigValue(NSDictionary *dictionary, NSString *key, int fallback) {
@@ -334,6 +408,12 @@ static void loadBatteryConfig(void) {
         c.heatProtect = readConfigValue(saved, @"heatProtect", c.heatProtect);
         c.heatLimit = readConfigValue(saved, @"heatLimit", c.heatLimit);
         c.ledMode = readConfigValue(saved, @"ledMode", c.ledMode);
+        c.autoDischarge = readConfigValue(saved, @"autoDischarge", c.autoDischarge);
+        int phase = readConfigValue(saved, @"calibrationPhase", CalIdle);
+        id started = saved[@"calibrationStarted"];
+        if(phase > CalIdle && phase <= CalToLimit && [started isKindOfClass:NSNumber.class]) {
+            gCalPhase = phase; gCalPhaseStart = [started doubleValue];
+        }
     }
     gBattery = batteryConfigValid(c) ? c : kBatteryDefaults;
 }
@@ -343,7 +423,9 @@ static int saveBatteryConfig(BatteryConfig c) {
         withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions: @0755} error:nil];
     NSDictionary *values = @{@"enabled": @(c.enabled), @"limit": @(c.limit), @"sailing": @(c.sailing),
                              @"sleepStop": @(c.sleepStop), @"stayAwake": @(c.stayAwake),
-                             @"heatProtect": @(c.heatProtect), @"heatLimit": @(c.heatLimit), @"ledMode": @(c.ledMode)};
+                             @"heatProtect": @(c.heatProtect), @"heatLimit": @(c.heatLimit), @"ledMode": @(c.ledMode),
+                             @"autoDischarge": @(c.autoDischarge), @"calibrationPhase": @(gCalPhase),
+                             @"calibrationStarted": @(gCalPhaseStart)};
     return [values writeToURL:[NSURL fileURLWithPath:path] error:nil] ? 0 : -1;
 }
 
@@ -352,7 +434,19 @@ static void batteryObserve(void) {
     gFindConflict(conflict, sizeof(conflict));
     strlcpy(gConflict, conflict, sizeof(gConflict));
     gReadBattery(&gLastReading);
-    if(gLastReading.valid && !gLastReading.external) gTopUp = 0;
+    smcLock(); int plugged = gReadPlugged(); smcUnlock();
+    gLastReading.plugged = plugged < 0 ? gLastReading.external : plugged;
+    if(gLastReading.valid && !gLastReading.plugged) gTopUp = 0;
+}
+static double wallClock(void) { return (double)time(NULL); }
+static int writeAdapter(int cut) {
+    unsigned char value = cut ? 0x08 : 0x00;
+    smcLock(); int failed = smcWriteBytes("CHIE", &value, 1) != 0; smcUnlock();
+    if(!failed) gAdapterCut = cut;
+    return failed ? -1 : 0;
+}
+static void restoreAdapter(void) {
+    if(gAdapterCut) writeAdapter(0);
 }
 // Unplugged, the LED is dark: forget what we wrote so plugging in rewrites it.
 // Mode 0 hands a changed LED back to macOS once and then leaves it alone.
@@ -374,7 +468,13 @@ static void batteryApplyLed(void) {
 }
 // Something to enforce or to hand back; otherwise ticks cost nothing.
 static int batteryActive(void) {
-    return gBattery.enabled || gInhibited || gBattery.ledMode != 0 || gLedOwned;
+    return gBattery.enabled || gInhibited || gBattery.ledMode != 0 || gLedOwned
+        || gAdapterCut || gDischargeTarget || gCalPhase != CalIdle;
+}
+static void setCalibrationPhase(int phase, int result) {
+    gCalPhase = phase; gCalPhaseStart = wallClock();
+    if(result) gCalResult = result;
+    saveBatteryConfig(gBattery);
 }
 // Runs on the battery queue: every 10 s, on wake and after each command. A
 // feature the user never turned on leaves the keys alone, unless a change in
@@ -382,23 +482,37 @@ static int batteryActive(void) {
 static void batteryTick(void) {
     if(gBatteryStopping || !batteryActive()) return;
     batteryObserve();
-    if(gConflict[0]) return;
+    // Another charge manager may want the adapter: never leave it cut for them.
+    if(gConflict[0]) { restoreAdapter(); return; }
+    double now = wallClock();
+    if(gCalPhase != CalIdle) {
+        int next = calibrationNext(gCalPhase, gLastReading, now - gCalPhaseStart, gBattery);
+        if(next != gCalPhase) setCalibrationPhase(next < 0 ? CalIdle : next, next < 0 ? 2 : next == CalIdle ? 1 : 0);
+    }
+    if(gDischargeTarget && gLastReading.valid
+       && (gLastReading.percent <= gDischargeTarget || !gLastReading.plugged || now > gDischargeDeadline)) gDischargeTarget = 0;
+    int cut = gAdapterSupported
+        && batteryWantsCut(gLastReading, batteryDischargeTarget(gBattery, gLastReading, gDischargeTarget, gCalPhase));
     gHeatHeld = batteryHeatHold(gBattery, gLastReading, gHeatHeld);
-    int want = batteryShouldInhibit(gBattery, gLastReading, gTopUp, gInhibited) || gHeatHeld;
+    int want = batteryShouldInhibit(gBattery, gLastReading, gTopUp || calibrationCharging(gCalPhase), gInhibited) || gHeatHeld;
     if(gBackend != BatteryBackendNone && want != gInhibited) {
         smcLock(); gWriteFailed = writeInhibit(gBackend, want) != 0; smcUnlock();
         if(!gWriteFailed) gInhibited = want;
     }
+    if(cut != gAdapterCut && writeAdapter(cut) != 0) gWriteFailed = 1;
     batteryApplyLed();
 }
 // Idle sleep waits while charging up to the limit, so it stops exactly there.
 static int batteryKeepsAwake(void) {
+    // Discharging and calibration only progress while awake.
+    if(!gConflict[0] && (gAdapterCut || gDischargeTarget || gCalPhase != CalIdle)) return 1;
     return gBattery.enabled && gBattery.stayAwake && gBackend != BatteryBackendNone && !gConflict[0]
         && !gTopUp && !gInhibited && gLastReading.valid && gLastReading.external
         && gLastReading.percent < gBattery.limit;
 }
 // Asleep, nothing can stop charging at the limit, so optionally pause it first.
 static void batteryWillSleep(void) {
+    restoreAdapter();   // asleep, nothing would stop the drain
     if(gBatteryStopping || !gBattery.enabled || !gBattery.sleepStop || gTopUp || gBattery.limit >= 100
        || gBackend == BatteryBackendNone || gConflict[0] || gInhibited) return;
     smcLock(); if(writeInhibit(gBackend, 1) == 0) gInhibited = 1; smcUnlock();
@@ -408,6 +522,7 @@ static void batteryWillSleep(void) {
 static void batteryRelease(void) {
     gBatteryStopping = 1;
     if(gBatteryTimer) dispatch_source_cancel(gBatteryTimer);
+    restoreAdapter();   // our own cut is always undone, conflict or not
     if(gConflict[0]) return;
     smcLock();
     if(gInhibited && gBackend != BatteryBackendNone && writeInhibit(gBackend, 0) == 0) gInhibited = 0;
@@ -419,11 +534,14 @@ static void formatBatteryStatus(char *out, size_t size) {
     static const char *backends[] = {"none", "chte", "ch0bc"};
     snprintf(out, size, "OK backend=%s enabled=%d limit=%d sailing=%d sleepstop=%d stayawake=%d "
              "heat=%d heatlimit=%d led=%d topup=%d inhibited=%d heatheld=%d percent=%d external=%d "
-             "charging=%d temp=%d ledsupported=%d conflict=%s writefailed=%d\n",
+             "charging=%d temp=%d ledsupported=%d adapter=%d cut=%d plugged=%d discharge=%d "
+             "autodischarge=%d calibration=%d calelapsed=%d calresult=%d conflict=%s writefailed=%d\n",
              backends[gBackend], gBattery.enabled, gBattery.limit, gBattery.sailing, gBattery.sleepStop,
              gBattery.stayAwake, gBattery.heatProtect, gBattery.heatLimit, gBattery.ledMode, gTopUp,
              gInhibited, gHeatHeld, gLastReading.valid ? gLastReading.percent : -1, gLastReading.external,
-             gLastReading.charging, gLastReading.temperature, gLedSupported,
+             gLastReading.charging, gLastReading.temperature, gLedSupported, gAdapterSupported, gAdapterCut,
+             gLastReading.plugged, gDischargeTarget, gBattery.autoDischarge, gCalPhase,
+             gCalPhase != CalIdle ? (int)(wallClock() - gCalPhaseStart) : 0, gCalResult,
              gConflict[0] ? gConflict : "-", gWriteFailed);
 }
 static void onBattery(void (^block)(void)) {
@@ -446,11 +564,13 @@ static void startBatteryControl(void) {
     gBatteryQueue = dispatch_queue_create("com.omnistats.battery", DISPATCH_QUEUE_SERIAL);
     dispatch_sync(gBatteryQueue, ^{
         loadBatteryConfig();
+        gFindConflict(gConflict, sizeof(gConflict));
         unsigned char led[32]; unsigned int size = 0, type = 0;
         smcLock();
         gBackend = probeBatteryBackend();
         int current = readInhibit(gBackend);
         gLedSupported = smcReadBytes("ACLC", led, &size, &type) == 1;
+        gAdapterSupported = probeAdapter(!gConflict[0]);
         smcUnlock();
         gInhibited = current == 1;
         batteryTick();
@@ -473,7 +593,7 @@ static int handleLine(int fd, const char *line) {
     int fan = -1, heartbeat = 0;
     float rpm;
     if(strcmp(line, "PING") == 0) strcpy(reply, "OK\n");
-    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 5\n");
+    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 6\n");
     else if(strcmp(line, "HB") == 0) { strcpy(reply, "OK\n"); heartbeat = 1; }
     else if(strcmp(line, "AUTOALL") == 0) strcpy(reply, autoAll() == 0 ? "OK\n" : "ERR auto\n");
     else if(sscanf(line, "AUTO %d %c", &fan, &extra) == 1 && strncmp(line, "AUTO ", 5) == 0) {
@@ -515,8 +635,32 @@ static int handleLine(int fd, const char *line) {
         strcpy(reply, result == 0 ? "OK\n" : result == -2 ? "ERR save\n" : "ERR args\n");
     } else if(strcmp(line, "BTOPUP 1") == 0 || strcmp(line, "BTOPUP 0") == 0) {
         int enable = line[7] == '1';
-        onBattery(^{ gTopUp = enable; batteryTick(); });
+        onBattery(^{ gTopUp = enable; if(enable) gDischargeTarget = 0; batteryTick(); });
         strcpy(reply, "OK\n");
+    } else if(sscanf(line, "BDISCHARGE %d %c", &fan, &extra) == 1 && strncmp(line, "BDISCHARGE ", 11) == 0) {
+        int target = fan;
+        __block const char *result = "OK\n";
+        onBattery(^{
+            if(target == 0) { gDischargeTarget = 0; batteryTick(); return; }
+            if(target < DISCHARGE_FLOOR || target > 95) { result = "ERR args\n"; return; }
+            if(!gAdapterSupported) { result = "ERR unsupported\n"; return; }
+            gTopUp = 0; gDischargeTarget = target; gDischargeDeadline = wallClock() + DISCHARGE_MAX_SEC;
+            batteryTick();
+        });
+        strcpy(reply, result);
+    } else if(strcmp(line, "BCALIBRATE 1") == 0 || strcmp(line, "BCALIBRATE 0") == 0) {
+        int start = line[11] == '1';
+        __block const char *result = "OK\n";
+        onBattery(^{
+            if(!start) { if(gCalPhase != CalIdle) setCalibrationPhase(CalIdle, 2); batteryTick(); return; }
+            if(!gAdapterSupported) { result = "ERR unsupported\n"; return; }
+            batteryObserve();
+            if(!gLastReading.valid || !gLastReading.plugged) { result = "ERR unplugged\n"; return; }
+            gTopUp = 0; gDischargeTarget = 0; gCalResult = 0;
+            setCalibrationPhase(CalCharge1, 0);
+            batteryTick();
+        });
+        strcpy(reply, result);
     } else strcpy(reply, "ERR command\n");
     return sendReply(fd, reply) == 0 ? heartbeat : -1;
 }
@@ -540,7 +684,7 @@ int main(void) {
     gClientRequirement = copyClientRequirement();
     startBatteryControl();
     static const char *backends[] = {"none", "chte", "ch0bc"};
-    fprintf(stderr, "omnistats-smcd protocol 5: %d fans, battery backend %s, %s clients\n", gFanCount,
+    fprintf(stderr, "omnistats-smcd protocol 6: %d fans, battery backend %s, %s clients\n", gFanCount,
         backends[gBackend], !gSignedHelper ? "console-user" : gClientRequirement ? "signed" : "no (requirement unavailable)");
     while(!gStop) {
         struct pollfd listening = {server, POLLIN, 0};

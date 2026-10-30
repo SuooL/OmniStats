@@ -325,10 +325,16 @@ struct LogicTests {
         batterySampler.setSamplingInterval(nil)
         check(batterySampler.samplingInterval == nil && batterySampler.snapshot == charging, "Pausing keeps the last reading")
         let statusLine = "OK backend=chte enabled=1 limit=80 sailing=5 sleepstop=0 stayawake=1 heat=1 heatlimit=42 led=1 topup=0 "
-            + "inhibited=1 heatheld=0 percent=85 external=1 charging=0 temp=3125 ledsupported=1 conflict=- writefailed=0"
+            + "inhibited=1 heatheld=0 percent=85 external=1 charging=0 temp=3125 ledsupported=1 adapter=1 cut=1 plugged=1 "
+            + "discharge=60 autodischarge=1 calibration=3 calelapsed=900 calresult=0 conflict=- writefailed=0"
         let status = ChargeControlStatus(reply: statusLine)
         check(status?.backend == .chte && status?.settings == ChargeLimitSettings(enabled: true, limit: 80, sailing: 5, sleepStop: false,
-              stayAwake: true, heatProtect: true, heatLimit: 42, ledMode: .status), "Charge-control status parses settings")
+              stayAwake: true, heatProtect: true, heatLimit: 42, ledMode: .status, autoDischarge: true), "Charge-control status parses settings")
+        check(status?.adapterSupported == true && status?.adapterCut == true && status?.plugged == true && status?.dischargeTarget == 60
+              && status?.calibration == .discharge && status?.calibrationElapsed == 900, "Adapter, discharge and calibration state")
+        check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "discharge=60", with: "discharge=0"))?.dischargeTarget == nil
+              && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "calibration=3", with: "calibration=9")) == nil,
+              "No session reads as nil; unknown calibration phases are rejected")
         check(status?.inhibited == true && status?.topUp == false && status?.heatHeld == false && status?.charging == false
               && status?.conflict == nil && status?.writeFailed == false, "Charge-control state flags")
         check(status?.temperature == 31.25 && status?.ledSupported == true, "Battery temperature and LED support")
@@ -344,7 +350,7 @@ struct LogicTests {
               "Old helpers and malformed status lines are not trusted")
         let limitSettings = ChargeLimitSettings(enabled: true, limit: 75, sailing: 3, sleepStop: true, stayAwake: false,
                                                 heatProtect: true, heatLimit: 38, ledMode: .off)
-        check(limitSettings.command == "BSET enabled=1 limit=75 sailing=3 sleepstop=1 stayawake=0 heat=1 heatlimit=38 led=2"
+        check(limitSettings.command == "BSET enabled=1 limit=75 sailing=3 sleepstop=1 stayawake=0 heat=1 heatlimit=38 led=2 autodischarge=0"
               && limitSettings.resumeAt == 72,
               "Settings serialize to one BSET line")
         let pmsetOutput = """
@@ -462,6 +468,14 @@ struct LogicTests {
         let relaunched = ChargeScheduleRunner(store: scheduleStore, defaults: scheduleDefaults, calendar: utc, now: { scheduleClock }) { ran.append($0) }
         check(ran.count == 1 && relaunched.nextFire == at(9, 7), "A relaunch resumes from the persisted last check")
         scheduleDefaults.removePersistentDomain(forName: scheduleSuite)
+
+        let previousLanguage = L.lang
+        for language in [AppLanguage.zhHans, .en, .zhHant, .ja] {
+            L.lang = language
+            check(L.f("dc.phase.hold1", 40).contains("100%") && L.f("dc.needsNative100", 85).contains("100%")
+                  && L.f("dc.needsNative100", 85).contains("85%"), "Literal percent signs survive formatting (\(language))")
+        }
+        L.lang = previousLanguage
 
         // Menu-bar icon hiding.
         check(MenuBarLayout.collapsedLength(screenWidths: [1728, 1000]) == 3456

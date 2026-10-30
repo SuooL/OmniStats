@@ -11,8 +11,17 @@ struct ChargeControlStatus: Equatable {
     var charging: Bool
     var temperature: Double?   // °C
     var ledSupported: Bool
+    var adapterSupported: Bool
+    var adapterCut: Bool          // OmniStats is running the Mac from its battery
+    var plugged: Bool             // the adapter is physically connected
+    var dischargeTarget: Int?     // manual discharge session
+    var calibration: Calibration
+    var calibrationElapsed: TimeInterval
+    var calibrationResult: Int    // 0 none, 1 finished, 2 stopped early
     var conflict: String?
     var writeFailed: Bool
+
+    enum Calibration: Int { case idle, charge1, hold1, discharge, charge2, hold2, toLimit }
 
     init?(reply: String) {
         guard reply.hasPrefix("OK ") else { return nil }
@@ -32,14 +41,23 @@ struct ChargeControlStatus: Equatable {
               let topUp = flag("topup"), let inhibited = flag("inhibited"), let heatHeld = flag("heatheld"),
               let charging = flag("charging"), let temperature = fields["temp"].flatMap({ Int($0) }),
               let ledSupported = flag("ledsupported"),
+              let adapter = flag("adapter"), let cut = flag("cut"), let plugged = flag("plugged"),
+              let discharge = fields["discharge"].flatMap({ Int($0) }), let autoDischarge = flag("autodischarge"),
+              let calibration = fields["calibration"].flatMap({ Int($0) }).flatMap(Calibration.init(rawValue:)),
+              let calibrationElapsed = fields["calelapsed"].flatMap({ Int($0) }),
+              let calibrationResult = fields["calresult"].flatMap({ Int($0) }),
               let conflict = fields["conflict"], let writeFailed = flag("writefailed") else { return nil }
         self.backend = backend
         settings = ChargeLimitSettings(enabled: enabled, limit: limit, sailing: sailing,
                                        sleepStop: sleepStop, stayAwake: stayAwake,
-                                       heatProtect: heat, heatLimit: heatLimit, ledMode: led)
+                                       heatProtect: heat, heatLimit: heatLimit, ledMode: led, autoDischarge: autoDischarge)
         self.topUp = topUp; self.inhibited = inhibited; self.heatHeld = heatHeld; self.charging = charging
         self.temperature = temperature > 0 ? Double(temperature) / 100 : nil
         self.ledSupported = ledSupported; self.writeFailed = writeFailed
+        adapterSupported = adapter; adapterCut = cut; self.plugged = plugged
+        dischargeTarget = discharge > 0 ? discharge : nil
+        self.calibration = calibration; self.calibrationElapsed = TimeInterval(calibrationElapsed)
+        self.calibrationResult = calibrationResult
         self.conflict = conflict == "-" ? nil : conflict
     }
 }
@@ -54,6 +72,7 @@ struct ChargeLimitSettings: Equatable {
     var heatProtect: Bool
     var heatLimit: Int         // °C
     var ledMode: LedMode
+    var autoDischarge: Bool = false
 
     // macOS keeps the MagSafe LED, OmniStats shows charging (orange) or not (green), or it stays off.
     enum LedMode: Int, CaseIterable, Identifiable { case system, status, off; var id: Int { rawValue } }
@@ -65,7 +84,8 @@ struct ChargeLimitSettings: Equatable {
     var command: String {
         "BSET enabled=\(enabled ? 1 : 0) limit=\(limit) sailing=\(sailing) "
             + "sleepstop=\(sleepStop ? 1 : 0) stayawake=\(stayAwake ? 1 : 0) "
-            + "heat=\(heatProtect ? 1 : 0) heatlimit=\(heatLimit) led=\(ledMode.rawValue)"
+            + "heat=\(heatProtect ? 1 : 0) heatlimit=\(heatLimit) led=\(ledMode.rawValue) "
+            + "autodischarge=\(autoDischarge ? 1 : 0)"
     }
 }
 
@@ -159,6 +179,9 @@ final class ChargeController: ObservableObject {
     func apply(_ settings: ChargeLimitSettings) { send(settings.command) }
     func setTopUp(_ enabled: Bool) { send("BTOPUP \(enabled ? 1 : 0)") }
     func perform(_ command: AutomationCommand) { command.helperCommand.map(send) }
+    // Not reachable from links or schedules: these run the Mac from its battery.
+    func discharge(to target: Int?) { send("BDISCHARGE \(target ?? 0)") }
+    func calibrate(_ start: Bool) { send("BCALIBRATE \(start ? 1 : 0)") }
 
     private func send(_ command: String) {
         request(command) { [weak self] reply in
