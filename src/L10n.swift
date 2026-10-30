@@ -88,6 +88,7 @@ enum L {
 
         // Settings sections
         "section.fans":    S(zhHans: "风扇", en: "Fans",    zhHant: "風扇", ja: "ファン"),
+        "section.battery": S(zhHans: "电池", en: "Battery", zhHant: "電池", ja: "バッテリー"),
         "section.general": S(zhHans: "通用", en: "General", zhHant: "通用", ja: "一般"),
         "section.about":   S(zhHans: "关于", en: "About",   zhHant: "關於", ja: "情報"),
 
@@ -102,7 +103,9 @@ enum L {
 
         // Menu panel + menu bar
         "m.socAvg":   S(zhHans: "SoC 平均", en: "SoC avg", zhHant: "SoC 平均", ja: "SoC 平均"),
-        "m.battery":  S(zhHans: "电池", en: "Battery", zhHant: "電池", ja: "バッテリー"),
+        "m.battery":  S(zhHans: "电池温度", en: "Battery temp", zhHant: "電池溫度", ja: "バッテリー温度"),
+        "m.batteryCharge": S(zhHans: "电池", en: "Battery", zhHant: "電池", ja: "バッテリー"),
+        "m.flowHelp": S(zhHans: "电源输入 · 系统功耗 · 电池(正为充电,负为放电)", en: "Adapter input · system load · battery (+ charging, − discharging)", zhHant: "電源輸入 · 系統功耗 · 電池(正為充電,負為放電)", ja: "アダプタ入力 · システム消費 · バッテリー(+ 充電 / − 放電)"),
         "m.power":    S(zhHans: "总功耗", en: "Power", zhHant: "總功耗", ja: "消費電力"),
         "m.voltage":  S(zhHans: "电压", en: "Voltage", zhHant: "電壓", ja: "電圧"),
         "m.fanLeft":  S(zhHans: "左风扇", en: "Left fan", zhHant: "左風扇", ja: "左ファン"),
@@ -202,6 +205,7 @@ enum L {
         "g.showNetwork":     S(zhHans: "菜单栏显示网速", en: "Show network speed", zhHant: "選單列顯示網速", ja: "ネット速度を表示"),
         "g.showNetworkPanel": S(zhHans: "面板显示网络", en: "Network in panel", zhHant: "面板顯示網路", ja: "パネルにネットワーク"),
         "g.showProcesses":   S(zhHans: "面板显示进程占用", en: "Top processes in panel", zhHant: "面板顯示行程佔用", ja: "パネルにプロセス使用率"),
+        "g.showBatteryPanel": S(zhHans: "面板显示电池", en: "Battery in panel", zhHant: "面板顯示電池", ja: "パネルにバッテリー"),
         "g.cpuWindow":       S(zhHans: "CPU 统计窗口", en: "CPU window", zhHant: "CPU 統計視窗", ja: "CPU 統計期間"),
         "g.sectionCharts":   S(zhHans: "图表", en: "Charts", zhHant: "圖表", ja: "チャート"),
         "g.topWidgetStyle":  S(zhHans: "顶部部件样式", en: "Top widgets", zhHant: "頂部部件樣式", ja: "上部ウィジェット"),
@@ -217,6 +221,40 @@ enum L {
         "accent.aurora":   S(zhHans: "极光", en: "Aurora", zhHant: "極光", ja: "オーロラ"),
         "accent.sunset":   S(zhHans: "落日", en: "Sunset", zhHant: "落日", ja: "サンセット"),
         "accent.indigo":   S(zhHans: "靛蓝", en: "Indigo", zhHant: "靛藍", ja: "インディゴ"),
+
+        // Battery pane
+        "b.title":    S(zhHans: "电池", en: "Battery", zhHant: "電池", ja: "バッテリー"),
+        "b.subtitle": S(zhHans: "电量、健康度与功率流向", en: "Charge, health & power flow", zhHant: "電量、健康度與功率流向", ja: "充電・状態・電力の流れ"),
+        "b.status":   S(zhHans: "状态", en: "Status", zhHant: "狀態", ja: "状態"),
+        "b.state.charging":    S(zhHans: "正在充电", en: "Charging", zhHant: "正在充電", ja: "充電中"),
+        "b.state.notCharging": S(zhHans: "已接电源,未充电", en: "Plugged in, not charging", zhHant: "已接電源,未充電", ja: "電源接続中・充電停止"),
+        "b.state.charged":     S(zhHans: "已充满", en: "Fully charged", zhHant: "已充滿", ja: "充電完了"),
+        "b.state.discharging": S(zhHans: "使用电池", en: "On battery", zhHant: "使用電池", ja: "バッテリー駆動"),
+        "b.hardwarePercent": S(zhHans: "硬件电量", en: "Hardware charge", zhHant: "硬體電量", ja: "ハードウェア残量"),
+        "b.hardwareHelp":    S(zhHans: "电池实际剩余容量 ÷ 当前满充容量。macOS 显示的百分比经过平滑,可能略有不同。", en: "Raw remaining capacity ÷ current full-charge capacity. The macOS percentage is smoothed and can differ slightly.", zhHant: "電池實際剩餘容量 ÷ 目前滿充容量。macOS 顯示的百分比經過平滑,可能略有不同。", ja: "実際の残容量 ÷ 現在のフル充電容量。macOS の表示は平滑化されているため、わずかに異なることがあります。"),
+        "b.timeToFull":  S(zhHans: "充满还需", en: "Time to full", zhHant: "充滿還需", ja: "満充電まで"),
+        "b.timeToEmpty": S(zhHans: "剩余使用时间", en: "Time remaining", zhHant: "剩餘使用時間", ja: "残り時間"),
+        "b.powerSource": S(zhHans: "电源", en: "Power source", zhHant: "電源", ja: "電源"),
+        "b.noAdapter":   S(zhHans: "未连接", en: "Not connected", zhHant: "未連接", ja: "未接続"),
+        "b.adapterConnected": S(zhHans: "已连接", en: "Connected", zhHant: "已連接", ja: "接続中"),
+        "b.powerFlow":   S(zhHans: "功率流向", en: "Power flow", zhHant: "功率流向", ja: "電力の流れ"),
+        "b.fromAdapter": S(zhHans: "电源输入", en: "From adapter", zhHant: "電源輸入", ja: "アダプタから"),
+        "b.systemLoad":  S(zhHans: "系统功耗", en: "System load", zhHant: "系統功耗", ja: "システム消費"),
+        "b.batteryFlow": S(zhHans: "电池", en: "Battery", zhHant: "電池", ja: "バッテリー"),
+        "b.batteryFlowHelp": S(zhHans: "正值为充电,负值为放电(电压 × 电流)。", en: "Positive while charging, negative while discharging (voltage × current).", zhHant: "正值為充電,負值為放電(電壓 × 電流)。", ja: "正の値は充電、負の値は放電(電圧 × 電流)。"),
+        "b.adapterLoss": S(zhHans: "转换损耗", en: "Conversion loss", zhHant: "轉換損耗", ja: "変換ロス"),
+        "b.voltageCurrent": S(zhHans: "电压 / 电流", en: "Voltage / current", zhHant: "電壓 / 電流", ja: "電圧 / 電流"),
+        "b.health":      S(zhHans: "健康度", en: "Health", zhHant: "健康度", ja: "バッテリーの状態"),
+        "b.maxCapacity": S(zhHans: "最大容量", en: "Maximum capacity", zhHant: "最大容量", ja: "最大容量"),
+        "b.capacityHelp": S(zhHans: "额定满充容量 ÷ 设计容量。macOS 按自己的周期更新「最大容量」,可能相差一两个百分点。", en: "Nominal full-charge capacity ÷ design capacity. macOS updates its own Maximum Capacity figure on its own schedule, so it can differ by a point or two.", zhHant: "額定滿充容量 ÷ 設計容量。macOS 依自己的週期更新「最大容量」,可能相差一兩個百分點。", ja: "公称フル充電容量 ÷ 設計容量。macOS の「最大容量」は独自の周期で更新されるため、1〜2 ポイント異なることがあります。"),
+        "b.fullCharge":  S(zhHans: "满充容量", en: "Full-charge capacity", zhHant: "滿充容量", ja: "フル充電容量"),
+        "b.design":      S(zhHans: "设计容量", en: "Design capacity", zhHant: "設計容量", ja: "設計容量"),
+        "b.cycles":      S(zhHans: "循环次数", en: "Cycle count", zhHant: "循環次數", ja: "充放電回数"),
+        "b.temperature": S(zhHans: "温度", en: "Temperature", zhHant: "溫度", ja: "温度"),
+        "b.loading":     S(zhHans: "读取中…", en: "Reading…", zhHant: "讀取中…", ja: "読み込み中…"),
+        "b.unavailable": S(zhHans: "无法读取电池信息", en: "Battery information unavailable", zhHant: "無法讀取電池資訊", ja: "バッテリー情報を取得できません"),
+        "b.hm": S(zhHans: "%d 小时 %d 分钟", en: "%d h %d min", zhHant: "%d 小時 %d 分鐘", ja: "%d 時間 %d 分"),
+        "b.m":  S(zhHans: "%d 分钟", en: "%d min", zhHant: "%d 分鐘", ja: "%d 分"),
 
         // About pane
         "a.title":    S(zhHans: "关于", en: "About", zhHant: "關於", ja: "情報"),

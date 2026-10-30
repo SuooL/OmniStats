@@ -46,6 +46,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🎨 Dark & light "thermal instrument" themes
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
 - 🚀 Optional launch at login (General → Startup)
+- 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow — read-only, no administrator access
 - ⬆️ Built-in update check with optional one-click self-update
 - 🪶 Tiny native SwiftUI app — no Electron, no background bloat
 

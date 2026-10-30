@@ -264,6 +264,51 @@ struct LogicTests {
         check(!LoginItem.isInstalled(bundlePath: "/Users/tester/Downloads/OmniStats.app", home: home), "Downloads must not register")
         check(!LoginItem.isInstalled(bundlePath: "/Applications/../tmp/OmniStats.app", home: home), "Paths are normalized before matching")
         check(!LoginItem.isInstalled(bundlePath: "/ApplicationsX/OmniStats.app", home: home), "Prefix match needs a folder boundary")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location")
+
+        let charging = BatterySnapshot(registry: [
+            "ExternalConnected": true, "IsCharging": true, "FullyCharged": false,
+            "CurrentCapacity": 50, "MaxCapacity": 100, "AppleRawCurrentCapacity": 4000, "AppleRawMaxCapacity": 8000,
+            "AvgTimeToFull": 90, "AvgTimeToEmpty": 65535, "Amperage": 2000, "Voltage": 12000,
+            "NominalChargeCapacity": 8300, "DesignCapacity": 8579, "CycleCount": 40, "DesignCycleCount9C": 1000,
+            "Temperature": 3046,
+            "AdapterDetails": ["Watts": 140, "Name": "140W USB-C Power Adapter"] as [String: Any],
+            "PowerTelemetryData": ["SystemPowerIn": 35447, "SystemLoad": 30000, "AdapterEfficiencyLoss": 681],
+        ])
+        check(charging.state == .charging && charging.percent == 50 && charging.hardwarePercent == 50, "Charging state and percentages")
+        check(charging.timeToFullMinutes == 90 && charging.timeToEmptyMinutes == nil, "Only the relevant time estimate is shown")
+        check(charging.batteryPower == 24 && charging.amperage == 2 && charging.voltage == 12, "Battery power is voltage × current")
+        check(abs((charging.health ?? 0) - 8300.0 / 8579.0 * 100) < 1e-9 && charging.cycleCount == 40, "Health is nominal ÷ design capacity")
+        check(charging.temperature == 30.46 && charging.adapterWatts == 140, "Temperature in 0.01 °C, adapter rating")
+        check(charging.systemPowerIn == 35.447 && charging.systemLoad == 30 && charging.adapterLoss == 0.681, "Power telemetry in mW")
+        // IOKit hands negative currents over as 64-bit two's complement.
+        let discharging = BatterySnapshot(registry: [
+            "ExternalConnected": false, "IsCharging": false, "CurrentCapacity": 70, "MaxCapacity": 100,
+            "Amperage": NSNumber(value: UInt64(18446744073709540042)), "Voltage": 12000,
+            "AvgTimeToEmpty": 200, "AdapterDetails": ["Watts": 140] as [String: Any],
+        ])
+        check(discharging.state == .discharging && discharging.amperage == -11.574, "Two's-complement current is negative")
+        check(abs((discharging.batteryPower ?? 0) + 138.888) < 1e-9, "Discharging power is negative")
+        check(discharging.timeToEmptyMinutes == 200 && discharging.adapterWatts == nil, "No adapter details on battery power")
+        let held = BatterySnapshot(registry: ["ExternalConnected": true, "IsCharging": false, "FullyCharged": false, "AvgTimeToFull": 65535])
+        check(held.state == .notCharging && held.timeToFullMinutes == nil, "Plugged in but held below full")
+        check(BatterySnapshot(registry: ["ExternalConnected": true, "FullyCharged": true]).state == .charged, "Fully charged")
+        let invalid = BatterySnapshot(registry: [
+            "CurrentCapacity": 50, "MaxCapacity": 0, "DesignCapacity": 0, "NominalChargeCapacity": 8000,
+            "Temperature": 99999, "Voltage": 0, "AppleRawMaxCapacity": 0, "AppleRawCurrentCapacity": 10,
+        ])
+        check(invalid.percent == nil && invalid.health == nil && invalid.temperature == nil, "Invalid readings are unavailable")
+        check(invalid.voltage == nil && invalid.batteryPower == nil && invalid.hardwarePercent == nil, "No zero-division or fake zeros")
+        check(BatterySnapshot(registry: [:]) == BatterySnapshot(), "Empty registry reads as nothing")
+        check(formatBatteryMinutes(80) == L.f("b.hm", 1, 20) && formatBatteryMinutes(45) == L.f("b.m", 45), "Battery time format")
+        let batterySampler = BatterySampler(isPresent: true, read: { charging })
+        batterySampler.setSamplingInterval(5)
+        wait { batterySampler.hasSample }
+        check(batterySampler.snapshot == charging && batterySampler.samplingInterval == 5, "Battery sampler publishes readings")
+        batterySampler.setSamplingInterval(nil)
+        check(batterySampler.samplingInterval == nil && batterySampler.snapshot == charging, "Pausing keeps the last reading")
+        let desktop = BatterySampler(isPresent: false, read: { charging })
+        desktop.setSamplingInterval(5)
+        check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling")
     }
 }
