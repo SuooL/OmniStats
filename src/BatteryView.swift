@@ -58,7 +58,8 @@ struct BatteryPanelSection: View {
                 Text(L.t("m.batteryCharge")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
                 if let battery {
                     let held = limit?.inhibited == true && battery.externalPower
-                    Text(held ? L.t("b.state.held") : battery.state.title)
+                    let hot = limit?.heatHeld == true && battery.externalPower
+                    Text(hot ? L.t("b.state.heat") : held ? L.t("b.state.held") : battery.state.title)
                         .font(.system(size: 10)).foregroundStyle(Theme.ink3).lineLimit(1)
                 }
                 Spacer(minLength: 4)
@@ -114,7 +115,8 @@ struct BatteryPane: View {
             }
             if let battery = sampler.snapshot {
                 status(battery)
-                ChargeControlCard(control: charge, mon: mon, external: battery.externalPower)
+                ChargeControlCard(control: charge, mon: mon, external: battery.externalPower,
+                                  fahrenheit: store.config.fahrenheit)
                 HStack(alignment: .top, spacing: 18) {
                     flow(battery)
                     health(battery)
@@ -224,6 +226,7 @@ struct ChargeControlCard: View {
     @ObservedObject var control: ChargeController
     @ObservedObject var mon: Monitor
     let external: Bool
+    let fahrenheit: Bool
     @State private var draggedLimit: Double?
 
     var body: some View {
@@ -295,9 +298,44 @@ struct ChargeControlCard: View {
             toggle(L.t("cc.sleepStop"), settings.sleepStop) { var s = settings; s.sleepStop = $0; control.apply(s) }
                 .help(L.t("cc.sleepStopHelp"))
             toggle(L.t("cc.stayAwake"), settings.stayAwake) { var s = settings; s.stayAwake = $0; control.apply(s) }
+            heatRows(status)
+        }
+        // The LED works without the limit, and even where charging can't be controlled.
+        if status.ledSupported && status.conflict == nil {
+            Divider().overlay(Theme.line)
+            ledRow(status)
         }
         if status.writeFailed { alert(L.t("cc.writeFailed"), .red) }
     }
+
+    @ViewBuilder private func heatRows(_ status: ChargeControlStatus) -> some View {
+        let settings = status.settings
+        toggle(L.t("cc.heat"), settings.heatProtect) { var s = settings; s.heatProtect = $0; control.apply(s) }
+            .help(L.t("cc.heatHelp"))
+        if settings.heatProtect {
+            Stepper(value: Binding(get: { settings.heatLimit }, set: { var s = settings; s.heatLimit = $0; control.apply(s) }),
+                    in: ChargeLimitSettings.heatRange) {
+                Text(L.f("cc.heatAbove", temperature(Double(settings.heatLimit))))
+                    .font(.system(size: 12)).foregroundStyle(Theme.ink)
+            }
+            if let current = status.temperature { note(L.f("cc.heatNow", temperature(current))) }
+        }
+    }
+
+    private func ledRow(_ status: ChargeControlStatus) -> some View {
+        let settings = status.settings
+        return HStack {
+            Text(L.t("cc.led")).font(.system(size: 12)).foregroundStyle(Theme.ink)
+            Spacer()
+            Picker("", selection: Binding(get: { settings.ledMode }, set: { var s = settings; s.ledMode = $0; control.apply(s) })) {
+                ForEach(ChargeLimitSettings.LedMode.allCases) { mode in Text(L.t("cc.led.\(mode)")).tag(mode) }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 250)
+        }
+        .help(L.t("cc.ledHelp"))
+    }
+
+    private func temperature(_ celsius: Double) -> String { fmtTemp(Float(celsius), fahrenheit: fahrenheit) }
 
     @ViewBuilder private func nativeLimitNote(_ limit: Int) -> some View {
         if let native = control.nativeLimit, native < limit {
@@ -312,6 +350,7 @@ struct ChargeControlCard: View {
     }
 
     private func stateText(_ status: ChargeControlStatus) -> String {
+        if status.heatHeld, let current = status.temperature { return L.f("cc.heatPaused", temperature(current)) }
         if status.topUp { return L.t("cc.toppingUp") }
         if status.inhibited { return L.f("cc.paused", status.settings.limit) }
         return external ? L.f("cc.chargingTo", status.settings.limit) : L.t("cc.onBattery")

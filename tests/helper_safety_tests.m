@@ -12,13 +12,14 @@ static int smcReadU8(const char *key) { return 2; }
 static int smcWriteU8(const char *key, unsigned char value) { modeWrites++; return value==0 && failAuto ? -1 : 0; }
 static int smcWriteFloat(const char *key, float value) { targetWrites++; targetRPM=value; return failTarget ? -1 : 0; }
 // In-memory charge-control keys: CHTE (current firmware) or CH0B/CH0C (older).
-static unsigned char chte[4], ch0b, ch0c;
-static int hasCHTE=1, hasCH0=0, failBatteryWrites, batteryWrites;
+static unsigned char chte[4], ch0b, ch0c, aclc=0x03;
+static int hasCHTE=1, hasCH0=0, hasACLC=1, failBatteryWrites, batteryWrites, ledWrites;
 static int smcReadBytes(const char *key, unsigned char *buffer, unsigned int *size, unsigned int *type) {
     (void)type;
     if(!strcmp(key,"CHTE") && hasCHTE) { memcpy(buffer,chte,4); *size=4; return 4; }
     if(!strcmp(key,"CH0B") && hasCH0) { buffer[0]=ch0b; *size=1; return 1; }
     if(!strcmp(key,"CH0C") && hasCH0) { buffer[0]=ch0c; *size=1; return 1; }
+    if(!strcmp(key,"ACLC") && hasACLC) { buffer[0]=aclc; *size=1; return 1; }
     return -1;
 }
 static int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned int size) {
@@ -27,6 +28,7 @@ static int smcWriteBytes(const char *key, const unsigned char *bytes, unsigned i
     if(!strcmp(key,"CHTE") && hasCHTE && size==4) { memcpy(chte,bytes,4); return 0; }
     if(!strcmp(key,"CH0B") && hasCH0 && size==1) { ch0b=bytes[0]; return 0; }
     if(!strcmp(key,"CH0C") && hasCH0 && size==1) { ch0c=bytes[0]; return 0; }
+    if(!strcmp(key,"ACLC") && hasACLC && size==1) { aclc=bytes[0]; ledWrites++; return 0; }
     return -1;
 }
 #define COOLBAR_SMC_H
@@ -99,8 +101,9 @@ int main(void) {
 
     BatteryConfig update=kBatteryDefaults;
     assert(parseBatterySet("enabled=1 limit=75",&update)==0 && update.enabled==1 && update.limit==75 && update.sailing==5);
+    assert(parseBatterySet("heat=1 heatlimit=45 led=2",&update)==0 && update.heatProtect==1 && update.heatLimit==45 && update.ledMode==2);
     const char *invalid[]={"","limit","limit=","limit=19","limit=101","limit=80x","limit=-5","sailing=0","sailing=21",
-                           "enabled=2","stayawake=3","bogus=1","limit=80 extra"};
+                           "enabled=2","stayawake=3","bogus=1","limit=80 extra","heat=2","heatlimit=29","heatlimit=51","led=3"};
     for(size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) {
         BatteryConfig before=update;
         assert(parseBatterySet(invalid[i],&update)==-1 && memcmp(&before,&update,sizeof(update))==0);
@@ -115,7 +118,7 @@ int main(void) {
     hasCHTE=1;
 
     gBackend=BatteryBackendCHTE; gInhibited=0; gBattery=off; batteryWrites=0;
-    testReading=(BatteryReading){1,90,1}; gLastReading=(BatteryReading){0,0,0};
+    testReading=(BatteryReading){1,90,1}; gLastReading=(BatteryReading){0,0,0,0,0};
     strlcpy(testConflict,"AlDente",sizeof(testConflict));
     batteryTick(); assert(batteryWrites==0 && !gLastReading.valid && !gConflict[0]);
     testConflict[0]=0;
@@ -141,6 +144,35 @@ int main(void) {
     testReading.percent=90; batteryTick(); batteryWillSleep(); assert(chte[0]==0);
     gBatteryStopping=0;
 
+    // Heat protection: holds at the limit, resumes 3 °C below, wins over Top Up.
+    BatteryConfig hot=on; hot.heatProtect=1; hot.heatLimit=40;
+    assert(batteryHeatHold(hot,(BatteryReading){1,50,1,1,4000},0)==1 && batteryHeatHold(hot,(BatteryReading){1,50,1,1,3800},1)==1);
+    assert(batteryHeatHold(hot,(BatteryReading){1,50,1,1,3700},1)==0 && batteryHeatHold(hot,(BatteryReading){1,50,1,1,3800},0)==0);
+    assert(batteryHeatHold(hot,(BatteryReading){1,50,1,1,0},1)==0 && batteryHeatHold(on,(BatteryReading){1,50,1,1,4500},0)==0);
+    gBattery=hot; gInhibited=0; gHeatHeld=0; gTopUp=1; testReading=(BatteryReading){1,50,1,1,4100};
+    batteryTick(); assert(chte[0]==1 && gHeatHeld && gInhibited);
+    testReading.temperature=3650; batteryTick(); assert(chte[0]==0 && !gHeatHeld);
+    gTopUp=0;
+
+    // MagSafe LED: written only on change, rewritten after replugging, handed back once.
+    assert(batteryLedTarget(on,(BatteryReading){1,50,1,1,0})==0x00);
+    BatteryConfig status=on; status.ledMode=1; BatteryConfig dark=on; dark.ledMode=2;
+    assert(batteryLedTarget(status,(BatteryReading){1,50,1,1,0})==0x04 && batteryLedTarget(status,(BatteryReading){1,50,1,0,0})==0x03);
+    assert(batteryLedTarget(dark,(BatteryReading){1,50,1,1,0})==0x01);
+    gLedSupported=1; gLedOwned=0; gLedValue=-1; aclc=0x03; ledWrites=0;
+    gBattery=on; gBattery.limit=100; testReading=(BatteryReading){1,60,1,1,3000};
+    batteryTick(); assert(ledWrites==0 && aclc==0x03);
+    gBattery.ledMode=1; batteryTick(); assert(aclc==0x04 && gLedOwned && ledWrites==1);
+    batteryTick(); assert(ledWrites==1);
+    testReading.charging=0; batteryTick(); assert(aclc==0x03 && ledWrites==2);
+    testReading.external=0; batteryTick(); assert(ledWrites==2 && gLedValue==-1);
+    testReading.external=1; batteryTick(); assert(ledWrites==3);
+    gBattery.ledMode=0; batteryTick(); assert(aclc==0x00 && !gLedOwned && ledWrites==4);
+    gBattery.enabled=0; batteryTick(); assert(ledWrites==4);
+    gBattery.ledMode=2; batteryTick(); assert(aclc==0x01 && gLedOwned);
+    batteryRelease(); assert(aclc==0x00 && !gLedOwned);
+    gBatteryStopping=0; gLedSupported=0; gBattery=on;
+
     char directory[]="/tmp/omnistats-battery-XXXXXX";
     assert(mkdtemp(directory));
     char configPath[256]; snprintf(configPath,sizeof(configPath),"%s/battery.plist",directory);
@@ -148,12 +180,14 @@ int main(void) {
     gBattery=kBatteryDefaults; testReading=(BatteryReading){1,70,1};
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
     char reply[1024];
-    command(pair[0],pair[1],"BSET enabled=1 limit=70 sailing=3",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n"));
+    command(pair[0],pair[1],"BSET enabled=1 limit=70 sailing=3 heatlimit=45",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n"));
+    command(pair[0],pair[1],"BSET heatlimit=40",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n"));
     command(pair[0],pair[1],"BSET limit=10",reply,sizeof(reply)); assert(!strcmp(reply,"ERR args\n") && gBattery.limit==70);
     gBattery=kBatteryDefaults; loadBatteryConfig();
-    assert(gBattery.enabled==1 && gBattery.limit==70 && gBattery.sailing==3);
+    assert(gBattery.enabled==1 && gBattery.limit==70 && gBattery.sailing==3 && gBattery.heatLimit==40);
     command(pair[0],pair[1],"BSTATUS",reply,sizeof(reply));
-    const char *expected="OK backend=chte enabled=1 limit=70 sailing=3 sleepstop=0 stayawake=0 topup=0 inhibited=1 percent=70 external=1 conflict=- writefailed=0\n";
+    const char *expected="OK backend=chte enabled=1 limit=70 sailing=3 sleepstop=0 stayawake=0 heat=0 heatlimit=40 led=0 "
+                         "topup=0 inhibited=1 heatheld=0 percent=70 external=1 charging=0 temp=0 ledsupported=0 conflict=- writefailed=0\n";
     assert(!strcmp(reply,expected));
     command(pair[0],pair[1],"BTOPUP 1",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gTopUp==1);
     command(pair[0],pair[1],"BTOPUP 2",reply,sizeof(reply)); assert(!strcmp(reply,"ERR command\n"));

@@ -323,19 +323,28 @@ struct LogicTests {
         check(batterySampler.snapshot == charging && batterySampler.samplingInterval == 5, "Battery sampler publishes readings")
         batterySampler.setSamplingInterval(nil)
         check(batterySampler.samplingInterval == nil && batterySampler.snapshot == charging, "Pausing keeps the last reading")
-        let statusLine = "OK backend=chte enabled=1 limit=80 sailing=5 sleepstop=0 stayawake=1 topup=0 inhibited=1 percent=85 external=1 conflict=- writefailed=0"
+        let statusLine = "OK backend=chte enabled=1 limit=80 sailing=5 sleepstop=0 stayawake=1 heat=1 heatlimit=42 led=1 topup=0 "
+            + "inhibited=1 heatheld=0 percent=85 external=1 charging=0 temp=3125 ledsupported=1 conflict=- writefailed=0"
         let status = ChargeControlStatus(reply: statusLine)
-        check(status?.backend == .chte && status?.settings == ChargeLimitSettings(enabled: true, limit: 80, sailing: 5, sleepStop: false, stayAwake: true),
-              "Charge-control status parses settings")
-        check(status?.inhibited == true && status?.topUp == false && status?.conflict == nil && status?.writeFailed == false, "Charge-control state flags")
+        check(status?.backend == .chte && status?.settings == ChargeLimitSettings(enabled: true, limit: 80, sailing: 5, sleepStop: false,
+              stayAwake: true, heatProtect: true, heatLimit: 42, ledMode: .status), "Charge-control status parses settings")
+        check(status?.inhibited == true && status?.topUp == false && status?.heatHeld == false && status?.charging == false
+              && status?.conflict == nil && status?.writeFailed == false, "Charge-control state flags")
+        check(status?.temperature == 31.25 && status?.ledSupported == true, "Battery temperature and LED support")
+        check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "temp=3125", with: "temp=0"))?.temperature == nil,
+              "Unknown temperature stays unknown")
+        check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "led=1", with: "led=7")) == nil, "Unknown LED modes are rejected")
         check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "conflict=-", with: "conflict=AlDente"))?.conflict == "AlDente",
               "A running charge manager is reported by name")
         check(ChargeControlStatus(reply: "ERR command") == nil && ChargeControlStatus(reply: "OK backend=chte") == nil
               && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "backend=chte", with: "backend=magic")) == nil
-              && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "limit=80", with: "limit=eighty")) == nil,
+              && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "limit=80", with: "limit=eighty")) == nil
+              && ChargeControlStatus(reply: "OK backend=chte enabled=1 limit=80 sailing=5 sleepstop=0 stayawake=1 topup=0 inhibited=1 percent=85 external=1 conflict=- writefailed=0") == nil,
               "Old helpers and malformed status lines are not trusted")
-        let limitSettings = ChargeLimitSettings(enabled: true, limit: 75, sailing: 3, sleepStop: true, stayAwake: false)
-        check(limitSettings.command == "BSET enabled=1 limit=75 sailing=3 sleepstop=1 stayawake=0" && limitSettings.resumeAt == 72,
+        let limitSettings = ChargeLimitSettings(enabled: true, limit: 75, sailing: 3, sleepStop: true, stayAwake: false,
+                                                heatProtect: true, heatLimit: 38, ledMode: .off)
+        check(limitSettings.command == "BSET enabled=1 limit=75 sailing=3 sleepstop=1 stayawake=0 heat=1 heatlimit=38 led=2"
+              && limitSettings.resumeAt == 72,
               "Settings serialize to one BSET line")
         let pmsetOutput = """
         Battery level limits:
