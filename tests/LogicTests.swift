@@ -331,7 +331,19 @@ struct LogicTests {
         check(status?.backend == .chte && status?.settings == ChargeLimitSettings(enabled: true, limit: 80, sailing: 5, sleepStop: false,
               stayAwake: true, heatProtect: true, heatLimit: 42, ledMode: .status, autoDischarge: true), "Charge-control status parses settings")
         check(status?.adapterSupported == true && status?.adapterCut == true && status?.plugged == true && status?.dischargeTarget == 60
-              && status?.calibration == .discharge && status?.calibrationElapsed == 900, "Adapter, discharge and calibration state")
+              && status?.calibration == .discharge && status?.calibrationElapsed == 900 && status?.percent == 85,
+              "Adapter, discharge and calibration state")
+        check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "percent=85", with: "percent=0"))?.percent == nil,
+              "An unknown charge shows no progress")
+        let savedLanguage = L.lang; L.lang = .en
+        if var calibrating = ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "percent=85", with: "percent=99")) {
+            calibrating.calibration = .charge1; calibrating.calibrationElapsed = 61 * 60
+            check(DischargeCard.calibrationText(calibrating) == "Calibrating · Step 1/5: charging to 100% · now 99%, 61 min so far",
+                  "Calibration shows charge and time: \(DischargeCard.calibrationText(calibrating))")
+            calibrating.calibration = .discharge
+            check(DischargeCard.calibrationText(calibrating) == "Calibrating · Step 3/5: discharging to 15% · now 99%", "Discharge shows the charge")
+        } else { check(false, "Calibration status parses") }
+        L.lang = savedLanguage
         check(ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "discharge=60", with: "discharge=0"))?.dischargeTarget == nil
               && ChargeControlStatus(reply: statusLine.replacingOccurrences(of: "calibration=3", with: "calibration=9")) == nil,
               "No session reads as nil; unknown calibration phases are rejected")

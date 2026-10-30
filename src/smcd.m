@@ -1,4 +1,4 @@
-// Privileged fan and battery helper, protocol 6. Only SET/HB renew the manual-mode
+// Privileged fan and battery helper, protocol 7. Only SET/HB renew the manual-mode
 // watchdog; PING, VERSION, battery commands and malformed traffic cannot keep
 // stale fan control alive. A certificate-signed helper only serves the app
 // signed by that same certificate.
@@ -229,15 +229,22 @@ static int batteryConfigValid(BatteryConfig c) {
 static int calibrationCharging(int phase) {
     return phase == CalCharge1 || phase == CalHold1 || phase == CalCharge2 || phase == CalHold2;
 }
+// Full for calibration: 100 %, or 99 % once the charger has finished (macOS can
+// sit at 99 % through a long top-off). A heat pause is not a finished charge.
+static int calibrationFull(BatteryReading r, int heatHeld) {
+    return r.percent >= 100 || (r.percent >= 99 && r.external && !r.charging && !heatHeld);
+}
 // Calibration: full -> hold 1 h -> 15 % -> full -> hold 1 h -> back to the limit.
 // Returns the next phase, or -1 to stop early (unplugged, or a phase overran).
-static int calibrationNext(int phase, BatteryReading r, double elapsed, BatteryConfig c) {
+// The holds keep charging allowed, so a battery that is still topping off finishes there.
+static int calibrationNext(int phase, BatteryReading r, double elapsed, BatteryConfig c, int heatHeld) {
     if(phase == CalIdle || !r.valid) return phase;
     if(!r.plugged) return -1;
     switch(phase) {
     case CalCharge1: case CalCharge2:
-        if(r.percent >= 100) return phase + 1;
-        return elapsed > CAL_CHARGE_MAX_SEC ? -1 : phase;
+        if(calibrationFull(r, heatHeld)) return phase + 1;
+        if(elapsed > CAL_CHARGE_MAX_SEC) return r.percent >= 99 ? phase + 1 : -1;
+        return phase;
     case CalHold1: return elapsed >= CAL_HOLD_SEC ? CalDischarge : phase;
     case CalHold2: return elapsed >= CAL_HOLD_SEC ? (c.enabled && c.limit < 100 ? CalToLimit : CalIdle) : phase;
     case CalDischarge:
@@ -486,7 +493,7 @@ static void batteryTick(void) {
     if(gConflict[0]) { restoreAdapter(); return; }
     double now = wallClock();
     if(gCalPhase != CalIdle) {
-        int next = calibrationNext(gCalPhase, gLastReading, now - gCalPhaseStart, gBattery);
+        int next = calibrationNext(gCalPhase, gLastReading, now - gCalPhaseStart, gBattery, gHeatHeld);
         if(next != gCalPhase) setCalibrationPhase(next < 0 ? CalIdle : next, next < 0 ? 2 : next == CalIdle ? 1 : 0);
     }
     if(gDischargeTarget && gLastReading.valid
@@ -593,7 +600,7 @@ static int handleLine(int fd, const char *line) {
     int fan = -1, heartbeat = 0;
     float rpm;
     if(strcmp(line, "PING") == 0) strcpy(reply, "OK\n");
-    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 6\n");
+    else if(strcmp(line, "VERSION") == 0) strcpy(reply, "OK 7\n");
     else if(strcmp(line, "HB") == 0) { strcpy(reply, "OK\n"); heartbeat = 1; }
     else if(strcmp(line, "AUTOALL") == 0) strcpy(reply, autoAll() == 0 ? "OK\n" : "ERR auto\n");
     else if(sscanf(line, "AUTO %d %c", &fan, &extra) == 1 && strncmp(line, "AUTO ", 5) == 0) {
@@ -684,7 +691,7 @@ int main(void) {
     gClientRequirement = copyClientRequirement();
     startBatteryControl();
     static const char *backends[] = {"none", "chte", "ch0bc"};
-    fprintf(stderr, "omnistats-smcd protocol 6: %d fans, battery backend %s, %s clients\n", gFanCount,
+    fprintf(stderr, "omnistats-smcd protocol 7: %d fans, battery backend %s, %s clients\n", gFanCount,
         backends[gBackend], !gSignedHelper ? "console-user" : gClientRequirement ? "signed" : "no (requirement unavailable)");
     while(!gStop) {
         struct pollfd listening = {server, POLLIN, 0};
