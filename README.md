@@ -45,6 +45,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🎛 One-click curve presets (Quiet / Balanced / Cooler)
 - 🎨 Dark & light "thermal instrument" themes
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
+- 🚀 Optional launch at login (General → Startup)
 - ⬆️ Built-in update check with optional one-click self-update
 - 🪶 Tiny native SwiftUI app — no Electron, no background bloat
 
@@ -60,8 +61,13 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 
 Grab the latest **`OmniStats.dmg`** from the
 [Releases page](https://github.com/SuooL/OmniStats/releases/latest), open it, and
-drag **OmniStats** into Applications. Not notarized yet — on first launch,
-right-click the app → **Open** (or run `xattr -dr com.apple.quarantine /Applications/OmniStats.app`).
+drag **OmniStats** into Applications. It isn't notarized, so the first launch is
+blocked: on macOS 15 and later choose **System Settings → Privacy & Security →
+Open Anyway**; on macOS 13–14 right-click the app → **Open**. Or run
+`xattr -dr com.apple.quarantine /Applications/OmniStats.app`.
+
+Releases are signed with a fixed OmniStats certificate (self-signed, not Apple
+Developer ID), so permissions you grant macOS keep working across updates.
 
 ### Build from source
 
@@ -74,8 +80,9 @@ make
 open dist/OmniStats.app
 ```
 
-First launch may be blocked by Gatekeeper (the app isn't notarized). Right-click →
-**Open**, or:
+Source builds are signed ad-hoc (pass `SIGN_ID="<certificate name>"` to sign
+with your own certificate). If Gatekeeper blocks the first launch, use **Open
+Anyway** as above, or:
 
 ```bash
 xattr -dr com.apple.quarantine dist/OmniStats.app
@@ -123,7 +130,9 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
 - A **watchdog** reverts every fan to firmware auto if the app disconnects or
   hangs; quitting the app also reverts.
 - Only the tiny `omnistats-smcd` helper runs as root; it verifies the peer uid so
-  other local accounts can't hijack your fans.
+  other local accounts can't hijack your fans. In release builds it also checks
+  the connecting app's code signature, so only OmniStats signed with the same
+  certificate can send it commands.
 
 ## Updates
 

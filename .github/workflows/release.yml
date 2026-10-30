@@ -24,11 +24,56 @@ jobs:
       - name: Logic and helper safety regressions
         run: make test-logic
 
+      # macOS ties privacy grants to the app's designated requirement, so every
+      # release must be signed with the same self-signed certificate (see
+      # CONTRIBUTING → Release signing). codesign only finds identities in
+      # keychains on the search list, so the temporary keychain is added to it.
+      - name: Import release signing certificate
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGN_P12}" ] || [ -z "${MACOS_SIGN_P12_PASSWORD}" ]; then
+            echo "::error::MACOS_SIGN_P12 / MACOS_SIGN_P12_PASSWORD secrets are empty — see CONTRIBUTING (Release signing)."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/release-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          P12="$RUNNER_TEMP/release-signing.p12"
+          printf '%s' "$MACOS_SIGN_P12" | base64 --decode > "$P12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$P12" -k "$KEYCHAIN" -P "$MACOS_SIGN_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+          rm -f "$P12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Self-signed identities are untrusted, so look them up without -v.
+          IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk 'length($2) == 40 && $2 ~ /^[0-9A-F]+$/ { print $2; exit }')"
+          test -n "$IDENTITY"
+          echo "Signing identity SHA-1: $IDENTITY"
+          echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build app + helper
-        run: make
+        run: make SIGN_ID="$SIGN_ID"
 
       - name: Build DMG (for humans — drag to Applications)
-        run: make dmg
+        run: make dmg SIGN_ID="$SIGN_ID"
+
+      - name: Verify release signature
+        run: |
+          set -euo pipefail
+          codesign --verify --deep --strict dist/OmniStats.app
+          for code in dist/OmniStats.app dist/OmniStats.app/Contents/Resources/omnistats-smcd; do
+            REQUIREMENT="$(codesign -d -r- "$code" 2>&1 | grep 'designated' || true)"
+            echo "$code: $REQUIREMENT"
+            case "$REQUIREMENT" in
+              *"certificate leaf = H\""*) ;;
+              *) echo "::error::$code is not signed with the release certificate"; exit 1 ;;
+            esac
+          done
 
       - name: Zip app (for the Sparkle updater)
         run: ditto -c -k --keepParent dist/OmniStats.app OmniStats.zip
@@ -63,3 +108,8 @@ jobs:
             OmniStats.zip
             appcast.xml
           generate_release_notes: true
+
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ]; then security delete-keychain "$SIGN_KEYCHAIN" || true; fi

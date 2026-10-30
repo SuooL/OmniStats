@@ -37,6 +37,7 @@ OmniStats 常驻菜单栏,一眼看到 SoC / SSD / 电池温度、功耗与风�
 - 🎛 一键曲线预设(静音 / 均衡 / 高性能)
 - 🎨 深色 / 浅色"热学仪表"双主题
 - 🔒 应用内一键安装 root 助手(系统原生授权一次,无需终端)
+- 🚀 可选登录时启动(通用 → 启动)
 - ⬆️ 内置更新检查,可一键自更新
 - 🪶 原生 SwiftUI,极轻,无 Electron、无后台臃肿
 
@@ -51,8 +52,11 @@ OmniStats 常驻菜单栏,一眼看到 SoC / SSD / 电池温度、功耗与风�
 ### 下载安装(推荐)
 
 从 [Releases 页面](https://github.com/SuooL/OmniStats/releases/latest) 下载最新
-**`OmniStats.dmg`**,打开后把 **OmniStats** 拖进 Applications。尚未公证——首次打开
-请右键 → **打开**(或 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`)。
+**`OmniStats.dmg`**,打开后把 **OmniStats** 拖进 Applications。应用未经公证,首次打开会被拦截:
+macOS 15 及以上请在**系统设置 → 隐私与安全性 → 仍要打开**;macOS 13–14 右键应用 → **打开**。
+也可以运行 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`。
+
+发布版使用固定的 OmniStats 证书签名(自签名,非 Apple Developer ID),因此你授予 macOS 的权限在更新后依然有效。
 
 ### 从源码构建
 
@@ -65,7 +69,7 @@ make
 open dist/OmniStats.app
 ```
 
-首次打开可能被 Gatekeeper 拦截(未公证)。右键 → **打开**,或:
+源码构建默认 ad-hoc 签名(传入 `SIGN_ID="<证书名>"` 可改用你自己的证书)。若首次打开被 Gatekeeper 拦截,按上文选择**仍要打开**,或:
 
 ```bash
 xattr -dr com.apple.quarantine dist/OmniStats.app
@@ -102,7 +106,7 @@ Apple Silicon 风扇由 SMC 管理。OmniStats 以 root 写两个 SMC key 来控
 
 - 目标转速钳制在各风扇自身 `Mn`…`Mx` 区间。
 - **看门狗**:应用断连或卡死时,所有风扇自动回落固件自动;退出应用也会还原。
-- 仅极小的 `omnistats-smcd` 助手以 root 运行,并校验对端 uid,防止其他本地账户劫持风扇。
+- 仅极小的 `omnistats-smcd` 助手以 root 运行,并校验对端 uid,防止其他本地账户劫持风扇。发布版还会校验连接方的代码签名,只有同一证书签名的 OmniStats 才能向它发送指令。
 
 ## 更新
 
