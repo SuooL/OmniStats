@@ -88,6 +88,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var showNetworkInMenuBar: Bool = true
     var showNetworkPanel: Bool = true
     var showProcesses: Bool = true
+    var showBatteryPanel: Bool = true
     var cpuWindow: CPUWindow = .tenMin   // averaging window for the top-CPU list
     var topWidgetStyle: TopWidgetStyle = .ring     // SoC/SSD/Fans cluster: ring gauge vs time-series
     var topWidgetWindow: ChartWindow = .fiveMin    // history span for the top-widget charts
@@ -147,7 +148,7 @@ struct OmniStatsConfig: Codable, Equatable {
 extension OmniStatsConfig {
     enum CodingKeys: String, CodingKey {
         case fahrenheit, appearance, language, accent, menuNumberColor,
-             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, cpuWindow,
+             showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, showBatteryPanel, cpuWindow,
              topWidgetStyle, topWidgetWindow, netChartKind, refreshMode,
              autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
     }
@@ -163,6 +164,7 @@ extension OmniStatsConfig {
         cfg.showNetworkInMenuBar = try c.decodeIfPresent(Bool.self, forKey: .showNetworkInMenuBar) ?? cfg.showNetworkInMenuBar
         cfg.showNetworkPanel     = try c.decodeIfPresent(Bool.self, forKey: .showNetworkPanel)     ?? cfg.showNetworkPanel
         cfg.showProcesses        = try c.decodeIfPresent(Bool.self, forKey: .showProcesses)        ?? cfg.showProcesses
+        cfg.showBatteryPanel     = try c.decodeIfPresent(Bool.self, forKey: .showBatteryPanel)     ?? cfg.showBatteryPanel
         cfg.cpuWindow            = try c.decodeIfPresent(CPUWindow.self, forKey: .cpuWindow)         ?? cfg.cpuWindow
         cfg.topWidgetStyle       = try c.decodeIfPresent(TopWidgetStyle.self, forKey: .topWidgetStyle) ?? cfg.topWidgetStyle
         cfg.topWidgetWindow      = try c.decodeIfPresent(ChartWindow.self, forKey: .topWidgetWindow) ?? cfg.topWidgetWindow

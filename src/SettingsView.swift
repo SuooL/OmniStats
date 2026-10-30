@@ -1,10 +1,17 @@
 import SwiftUI
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case fans, general, about
+    case fans, battery, general, about
     var id: String { rawValue }
-    var title: String { self == .fans ? L.t("section.fans") : self == .general ? L.t("section.general") : L.t("section.about") }
-    var icon: String { self == .fans ? "fanblades.fill" : self == .general ? "gearshape.fill" : "info.circle.fill" }
+    var title: String { L.t("section.\(rawValue)") }
+    var icon: String {
+        switch self {
+        case .fans:    return "fanblades.fill"
+        case .battery: return "battery.100percent.bolt"
+        case .general: return "gearshape.fill"
+        case .about:   return "info.circle.fill"
+        }
+    }
 }
 
 // Set from launch args (--section) so screenshots can open a specific pane.
@@ -20,7 +27,11 @@ struct SettingsView: View {
     @ObservedObject var store: ConfigStore
     let engine: Engine
     let updater: Updater
+    let battery: BatterySampler
     @ObservedObject var state: SettingsState
+
+    // Desktop Macs have no battery pane.
+    var sections: [SettingsSection] { SettingsSection.allCases.filter { $0 != .battery || battery.isPresent } }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -46,7 +57,7 @@ struct SettingsView: View {
                 Text("OmniStats").font(.system(size: 15, weight: .bold))
             }.padding(.bottom, 16).padding(.horizontal, 6).padding(.top, 8)
 
-            ForEach(SettingsSection.allCases) { s in
+            ForEach(sections) { s in
                 Button { state.section = s } label: {
                     HStack(spacing: 9) {
                         Image(systemName: s.icon).frame(width: 18)
@@ -70,7 +81,8 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
-        case .general: GeneralPane(store: store)
+        case .battery: BatteryPane(sampler: battery, store: store)
+        case .general: GeneralPane(store: store, hasBattery: battery.isPresent)
         case .about:   AboutPane(mon: mon, store: store, updater: updater)
         }
     }
@@ -288,6 +300,7 @@ struct FansPane: View {
 // MARK: - General
 struct GeneralPane: View {
     @ObservedObject var store: ConfigStore
+    let hasBattery: Bool
     @StateObject private var loginItem = LoginItem()
     private var cfg: OmniStatsConfig { store.config }
 
@@ -372,6 +385,10 @@ struct GeneralPane: View {
                     toggleRow(L.t("g.showNetworkPanel"), bind(\.showNetworkPanel))
                     Divider().overlay(Theme.line)
                     toggleRow(L.t("g.showProcesses"), bind(\.showProcesses))
+                    if hasBattery {
+                        Divider().overlay(Theme.line)
+                        toggleRow(L.t("g.showBatteryPanel"), bind(\.showBatteryPanel))
+                    }
                     Divider().overlay(Theme.line)
                     row(L.t("g.cpuWindow")) {
                         Picker("", selection: bind(\.cpuWindow)) {
