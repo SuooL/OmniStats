@@ -103,7 +103,18 @@ Apple Silicon 风扇由 SMC 管理。OmniStats 以 root 写两个 SMC key 来控
 - 可选项:睡眠前暂停充电;充到上限前不进入闲置睡眠。**立即充满**会暂时解除上限,拔掉电源后恢复。
 - **高温保护**:电池温度高于你设定的值(30–50 °C)时暂停充电,降温 3 °C 后恢复;「立即充满」时同样生效。
 - **MagSafe 指示灯**:交给 macOS、显示充电状态(充电时橙色,其余绿色)或关闭。重新选择「系统」即交还给 macOS。
-- 计划中、尚未提供:接电源时放电、校准和定时计划。
+- **定时计划**(电池页):在指定的星期和时间重复执行设置上限、立即充满、开启或关闭限制。OmniStats 运行时生效;睡眠期间错过的计划会在唤醒后补做(12 小时内)。
+- **自动化**:快捷指令的「打开 URL」(或终端里的 `open`)可以控制充电上限,只开放与上限相关的操作:
+
+  | 链接 | 作用 |
+  |---|---|
+  | `omnistats://battery/limit?value=80` | 开启上限并设为 80%(20–100) |
+  | `omnistats://battery/enable`、`…/disable` | 开启或关闭上限 |
+  | `omnistats://battery/topup`(加 `?enabled=0` 取消) | 立即充满,拔掉电源后恢复 |
+  | `omnistats://battery/led?mode=status`(`system`、`off`) | MagSafe 指示灯模式 |
+  | `omnistats://settings/battery` | 打开电池设置页 |
+
+- 计划中、尚未提供:接电源时放电和校准。
 
 ## 硬件友好调速
 

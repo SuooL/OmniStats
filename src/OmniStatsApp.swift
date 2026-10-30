@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusController: StatusItemController?
     private var settingsController: SettingsWindowController?
+    private var scheduleRunner: ChargeScheduleRunner?
     private var settingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ n: Notification) {
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activity: activity, resources: resources, battery: battery, charge: charge,
             onOpenSettings: { settings.show() })
         _ = sampling
+        scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
 
         // Delivered on the main queue, so the main-actor-isolated window work is
         // safe to run synchronously.
@@ -51,6 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 NotificationCenter.default.post(name: .openOmniSettings, object: nil)
             }
+        }
+    }
+
+    // omnistats:// links (Shortcuts "Open URL", Terminal `open`).
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let command = AutomationCommand(url: url) else { continue }
+            if command == .openBatterySettings { settingsController?.show(section: .battery) }
+            else { charge.perform(command) }
         }
     }
 

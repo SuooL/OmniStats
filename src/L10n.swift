@@ -31,6 +31,16 @@ enum AppLanguage: String, Codable, CaseIterable, Identifiable {
         }
         return .en
     }
+
+    /// For locale-formatted names (e.g. weekday symbols) in the app's language.
+    var localeIdentifier: String {
+        switch resolved {
+        case .zhHans: return "zh-Hans"
+        case .zhHant: return "zh-Hant"
+        case .ja:     return "ja"
+        default:      return "en"
+        }
+    }
 }
 
 // MARK: - String table
@@ -293,6 +303,16 @@ enum L {
         "cc.led.off":  S(zhHans: "关闭", en: "Off", zhHant: "關閉", ja: "オフ"),
         "cc.ledHelp":  S(zhHans: "「充电状态」:正在充电时橙色,暂停或充满时绿色。", en: "Charge state: orange while charging, green while paused or full.", zhHant: "「充電狀態」:正在充電時橙色,暫停或充滿時綠色。", ja: "充電状態:充電中はオレンジ、停止中や満充電時はグリーン。"),
         "b.state.heat": S(zhHans: "温度过高,暂停充电", en: "Too warm, not charging", zhHant: "溫度過高,暫停充電", ja: "高温のため充電停止中"),
+        "sched.title":  S(zhHans: "定时计划", en: "Schedule", zhHant: "定時計畫", ja: "スケジュール"),
+        "sched.add":    S(zhHans: "添加", en: "Add", zhHant: "新增", ja: "追加"),
+        "sched.delete": S(zhHans: "删除", en: "Delete", zhHant: "刪除", ja: "削除"),
+        "sched.empty":  S(zhHans: "还没有计划。例如:工作日 7:00「立即充满」,出门前电量充足。", en: "No schedules yet. For example, \"Charge to full\" at 7:00 on weekdays so the battery is full when you leave.", zhHant: "還沒有計畫。例如:工作日 7:00「立即充滿」,出門前電量充足。", ja: "スケジュールはありません。例:平日 7:00 に「フル充電」で、出かける前に満充電にできます。"),
+        "sched.note":   S(zhHans: "OmniStats 运行时执行;睡眠期间错过的计划会在唤醒后补做(12 小时内)。", en: "Runs while OmniStats is running; anything missed during sleep runs on wake (within 12 hours).", zhHant: "OmniStats 執行時運作;睡眠期間錯過的計畫會在喚醒後補做(12 小時內)。", ja: "OmniStats の実行中に動作します。スリープ中に過ぎた予定は復帰後に実行されます(12 時間以内)。"),
+        "sched.shortcuts": S(zhHans: "快捷指令:用「打开 URL」,例如 omnistats://battery/limit?value=80、omnistats://battery/topup", en: "Shortcuts: use \"Open URL\", e.g. omnistats://battery/limit?value=80 or omnistats://battery/topup", zhHant: "捷徑:使用「打開 URL」,例如 omnistats://battery/limit?value=80、omnistats://battery/topup", ja: "ショートカット:「URL を開く」で、例 omnistats://battery/limit?value=80、omnistats://battery/topup"),
+        "sched.action.setLimit": S(zhHans: "设置上限", en: "Set limit", zhHant: "設定上限", ja: "上限を設定"),
+        "sched.action.topUp":    S(zhHans: "立即充满", en: "Charge to full", zhHant: "立即充滿", ja: "フル充電"),
+        "sched.action.enable":   S(zhHans: "开启限制", en: "Turn limit on", zhHant: "開啟限制", ja: "制限をオン"),
+        "sched.action.disable":  S(zhHans: "关闭限制", en: "Turn limit off", zhHant: "關閉限制", ja: "制限をオフ"),
         "m.limitChip": S(zhHans: "上限 %d%%", en: "Limit %d%%", zhHant: "上限 %d%%", ja: "上限 %d%%"),
         "b.state.held": S(zhHans: "已达上限,暂停充电", en: "Held at the limit", zhHant: "已達上限,暫停充電", ja: "上限で充電停止中"),
 
