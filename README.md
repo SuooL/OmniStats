@@ -69,9 +69,11 @@ blocked: on macOS 15 and later choose **System Settings → Privacy & Security �
 Open Anyway**; on macOS 13–14 right-click the app → **Open**. Or run
 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`.
 
-Releases are ad-hoc signed and not notarized. macOS ties the privacy permissions
-you grant (such as Full Disk Access) to one exact build, so after an update you
-may need to grant them again.
+Releases are not notarized. From 1.6.0 they are signed with one fixed
+self-signed certificate, and macOS ties the privacy permissions you grant (such
+as Full Disk Access) to that signature, so they should carry over to later
+updates. Earlier releases were ad-hoc signed, so the update to 1.6.0 asks for
+them once more.
 
 ### Build from source
 
@@ -175,7 +177,7 @@ goes to the Trash, so it can be restored.
   a fixed set of folders, refuses symlinks and `..`, runs no shell and moves
   rather than deletes.
 - Other apps' containers need Full Disk Access; without it they stay unticked.
-  With ad-hoc signed releases macOS asks for it again after each update.
+  Ad-hoc signed builds (source builds, releases before 1.6.0) lose it on every update.
 - Each uninstall writes a log to `~/Library/Logs/OmniStats`.
 - **Reset…** keeps the app and moves only the selected data, caches and
   settings to the Trash; the app bundle, its launch agents, daemons, helpers
@@ -204,7 +206,7 @@ always-hidden section, revealed by ⌥-clicking or right-clicking ‹.
 
 - It works like Hidden Bar: when hidden, the divider widens to push everything
   to its left off-screen. No Accessibility or Screen Recording permission is
-  involved, so it is unaffected by ad-hoc signed updates.
+  involved, so updates never affect it.
 - If the divider ends up right of ‹, OmniStats refuses to hide (so ‹ can't
   vanish) and the pane asks you to drag it back.
 - macOS 27 rebuilt the menu bar and drops over-wide items, so the feature is
@@ -231,8 +233,9 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
 - Only the tiny `omnistats-smcd` helper runs as root; it verifies the peer uid so
   other local accounts can't hijack your fans. When the helper is signed with a
   certificate, it also checks the connecting app's code signature, so only
-  OmniStats signed with the same certificate can send it commands. Ad-hoc builds,
-  including current releases, rely on the console-user check.
+  OmniStats signed with the same certificate can send it commands. Releases are
+  certificate-signed from 1.6.0; ad-hoc builds (source builds, older releases)
+  rely on the console-user check.
 - Charge control fails towards charging: the helper allows charging again when
   it exits (uninstall, shutdown), when the battery can't be read, and when the
   limit is turned off. It writes nothing while another charge manager (AlDente,

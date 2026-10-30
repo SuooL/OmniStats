@@ -11,6 +11,11 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    env:
+      # SHA-1 of the release certificate (public; see CONTRIBUTING → Release
+      # signing). Installed helpers only accept an app signed with it, so a
+      # release signed any other way is refused. Empty = ad-hoc releases.
+      RELEASE_CERT_SHA1: 4A85013393CC7CB213ABE9F0E1A5311A9D19526B
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +40,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${MACOS_SIGN_P12}" ] || [ -z "${MACOS_SIGN_P12_PASSWORD}" ]; then
+            if [ -n "$RELEASE_CERT_SHA1" ]; then
+              echo "::error::MACOS_SIGN_P12 secrets are missing but RELEASE_CERT_SHA1 is set: an ad-hoc release would cost every user their permissions and helper connection."
+              exit 1
+            fi
             echo "No signing certificate configured: this release is ad-hoc signed."
             echo "SIGN_ID=-" >> "$GITHUB_ENV"
             exit 0
@@ -54,6 +63,10 @@ jobs:
           IDENTITY="$(security find-identity -p codesigning "$KEYCHAIN" | awk 'length($2) == 40 && $2 ~ /^[0-9A-F]+$/ { print $2; exit }')"
           test -n "$IDENTITY"
           echo "Signing identity SHA-1: $IDENTITY"
+          if [ -n "$RELEASE_CERT_SHA1" ] && [ "$IDENTITY" != "$RELEASE_CERT_SHA1" ]; then
+            echo "::error::MACOS_SIGN_P12 holds certificate $IDENTITY, expected $RELEASE_CERT_SHA1."
+            exit 1
+          fi
           echo "SIGN_ID=$IDENTITY" >> "$GITHUB_ENV"
           echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
@@ -68,11 +81,13 @@ jobs:
           set -euo pipefail
           codesign --verify --deep --strict dist/OmniStats.app
           if [ "$SIGN_ID" = "-" ]; then echo "Ad-hoc signed release."; exit 0; fi
-          for code in dist/OmniStats.app dist/OmniStats.app/Contents/Resources/omnistats-smcd; do
+          LEAF="$(printf '%s' "${RELEASE_CERT_SHA1:-$SIGN_ID}" | tr 'A-F' 'a-f')"
+          for code in dist/OmniStats.app dist/OmniStats.app/Contents/Resources/omnistats-smcd \
+                      dist/OmniStats.app/Contents/Resources/omnistats-cleaner; do
             REQUIREMENT="$(codesign -d -r- "$code" 2>&1 | grep 'designated' || true)"
             echo "$code: $REQUIREMENT"
             case "$REQUIREMENT" in
-              *"certificate leaf = H\""*) ;;
+              *"certificate leaf = H\"$LEAF\""*) ;;
               *) echo "::error::$code is not signed with the release certificate"; exit 1 ;;
             esac
           done
