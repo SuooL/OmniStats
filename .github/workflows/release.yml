@@ -24,19 +24,20 @@ jobs:
       - name: Logic and helper safety regressions
         run: make test-logic
 
-      # macOS ties privacy grants to the app's designated requirement, so every
-      # release must be signed with the same self-signed certificate (see
-      # CONTRIBUTING → Release signing). codesign only finds identities in
-      # keychains on the search list, so the temporary keychain is added to it.
-      - name: Import release signing certificate
+      # Releases are ad-hoc signed unless the optional MACOS_SIGN_P12 secrets exist
+      # (see CONTRIBUTING → Release signing). With them, every release is signed
+      # with that one certificate. codesign only finds identities in keychains on
+      # the search list, so the temporary keychain is added to it.
+      - name: Import optional release signing certificate
         env:
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
           MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
         run: |
           set -euo pipefail
           if [ -z "${MACOS_SIGN_P12}" ] || [ -z "${MACOS_SIGN_P12_PASSWORD}" ]; then
-            echo "::error::MACOS_SIGN_P12 / MACOS_SIGN_P12_PASSWORD secrets are empty — see CONTRIBUTING (Release signing)."
-            exit 1
+            echo "No signing certificate configured: this release is ad-hoc signed."
+            echo "SIGN_ID=-" >> "$GITHUB_ENV"
+            exit 0
           fi
           KEYCHAIN="$RUNNER_TEMP/release-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
@@ -66,6 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           codesign --verify --deep --strict dist/OmniStats.app
+          if [ "$SIGN_ID" = "-" ]; then echo "Ad-hoc signed release."; exit 0; fi
           for code in dist/OmniStats.app dist/OmniStats.app/Contents/Resources/omnistats-smcd; do
             REQUIREMENT="$(codesign -d -r- "$code" 2>&1 | grep 'designated' || true)"
             echo "$code: $REQUIREMENT"

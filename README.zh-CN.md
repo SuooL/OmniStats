@@ -57,7 +57,7 @@ OmniStats 常驻菜单栏,一眼看到 SoC / SSD / 电池温度、功耗与风�
 macOS 15 及以上请在**系统设置 → 隐私与安全性 → 仍要打开**;macOS 13–14 右键应用 → **打开**。
 也可以运行 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`。
 
-发布版使用固定的 OmniStats 证书签名(自签名,非 Apple Developer ID),因此你授予 macOS 的权限在更新后依然有效。
+发布版为 ad-hoc 签名,未经公证。macOS 会把你授予的隐私权限(如完全磁盘访问)绑定到某一个具体版本,因此更新后可能需要重新授权。
 
 ### 从源码构建
 
@@ -117,7 +117,7 @@ Apple Silicon 风扇由 SMC 管理。OmniStats 以 root 写两个 SMC key 来控
 
 - 目标转速钳制在各风扇自身 `Mn`…`Mx` 区间。
 - **看门狗**:应用断连或卡死时,所有风扇自动回落固件自动;退出应用也会还原。
-- 仅极小的 `omnistats-smcd` 助手以 root 运行,并校验对端 uid,防止其他本地账户劫持风扇。发布版还会校验连接方的代码签名,只有同一证书签名的 OmniStats 才能向它发送指令。
+- 仅极小的 `omnistats-smcd` 助手以 root 运行,并校验对端 uid,防止其他本地账户劫持风扇。如果助手使用证书签名,还会校验连接方的代码签名,只有同一证书签名的 OmniStats 才能向它发送指令;ad-hoc 构建(包括目前的发布版)只依靠控制台用户校验。
 - 充电控制出问题时一律放行充电:助手退出(卸载、关机)、读不到电池、关闭上限时都会恢复充电;检测到其他充电管理工具(AlDente、batt、Battery Toolkit)运行时不做任何写入;你没开启上限时,也不会碰充电相关的键。
 
 ## 更新
