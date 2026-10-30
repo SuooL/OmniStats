@@ -556,6 +556,85 @@ struct LogicTests {
               "Shared vendor folders, look-alike identifiers and unrelated daemons stay")
         check(LeftoverScanner.size(of: scratch.appendingPathComponent(fakeHome + "Preferences/com.example.app.plist")) ?? 0 > 0,
               "Sizes are measured")
+
+        // Homebrew: the Caskroom symlink names the cask, its receipt the zap list.
+        let caskVersion = scratch.appendingPathComponent("caskroom/example/1.0")
+        try! fm.createDirectory(at: caskVersion, withIntermediateDirectories: true)
+        try! fm.createSymbolicLink(atPath: caskVersion.appendingPathComponent("Example.app").path,
+                                   withDestinationPath: scratch.appendingPathComponent("Applications/Example.app").path)
+        let zapList = ["~/.example", "~/Library", "~/Library/Caches", "~/Documents", "~/Library/Logs/Example*",
+                       "/etc/hosts", "/Library/Preferences/com.example.shared.plist", "/Library/Preferences/Example/nested.plist"]
+        let receipt: [String: Any] = ["uninstall_artifacts": [["app": ["Example.app"]],
+                                                              ["zap": [["trash": zapList], ["delete": "~/Library/Caches/com.example.app"]]]]]
+        make("caskroom/example/.metadata/INSTALL_RECEIPT.json")
+        try! JSONSerialization.data(withJSONObject: receipt).write(to: scratch.appendingPathComponent("caskroom/example/.metadata/INSTALL_RECEIPT.json"))
+        for path in ["home/.example/config", "home/Library/Logs/Example Crash", "home/Library/Logs/ExampleLog", "home/Documents/a",
+                     "root/etc/hosts", "root/Library/Preferences/com.example.shared.plist", "root/Library/Preferences/Example/nested.plist"] {
+            make(path)
+        }
+        let savedCaskrooms = AppCatalog.caskrooms
+        AppCatalog.caskrooms = [scratch.appendingPathComponent("caskroom")]
+        let brewed = AppCatalog.installedApps(in: [scratch.appendingPathComponent("Applications")], excluding: nil)
+        AppCatalog.caskrooms = savedCaskrooms
+        check(brewed.first { $0.bundleID == "com.example.app" }?.cask == "example" && brewed.first?.zap.count == zapList.count + 1
+              && brewed.first { $0.bundleID == "com.vendor.tool" }?.cask == nil, "Homebrew casks and their zap lists are found")
+        if let brewedExample = brewed.first(where: { $0.bundleID == "com.example.app" }) {
+            let zapped = scanner.scan(brewedExample)
+            let fromCask = Set(zapped.filter(\.fromCask).map { $0.url.lastPathComponent })
+            check(fromCask == [".example", "Example Crash", "ExampleLog", "com.example.shared.plist"],
+                  "Zap items are added and marked: \(fromCask.sorted())")
+            check(zapped.count == found.count + 4 && zapped.first { $0.url.lastPathComponent == "com.example.shared.plist" }?.system == true,
+                  "Zap paths already found stay single; system ones need admin")
+        }
+        let zapHome = scratch.appendingPathComponent("home"), zapRoot = scratch.appendingPathComponent("root")
+        check(["Library", "Library/Caches", "Documents", ".ssh"].allSatisfy { scanner.zapItem(zapHome.appendingPathComponent($0)) == nil }
+              && scanner.zapItem(zapHome.appendingPathComponent("Library/Caches/x"))?.kind == .caches
+              && scanner.zapItem(zapRoot.appendingPathComponent("etc/hosts")) == nil
+              && scanner.zapItem(zapRoot.appendingPathComponent("Library/Preferences/Example/nested.plist")) == nil
+              && scanner.zapItem(zapRoot.appendingPathComponent("Library/LaunchDaemons/x.plist"))?.kind == .launchDaemon,
+              "Zap never takes a home or Library root, and outside home only what the cleaner may move")
+        check(AppUninstaller.keptOnReset == [.app, .receipt, .launchAgent, .launchDaemon, .helper], "Reset keeps what installs and runs the app")
+
+        // Leftovers of deleted apps.
+        check(OrphanScanner.identifier(in: "com.gone.app.plist") == "com.gone.app"
+              && OrphanScanner.identifier(in: "com.gone.app_stats.sqlite3") == "com.gone.app"
+              && OrphanScanner.identifier(in: "com.gone.app.savedState") == "com.gone.app"
+              && OrphanScanner.identifier(in: "com.gone.app.binarycookies") == "com.gone.app", "Identifiers from file names")
+        check(["Example", "com.gone", "group.com.gone.app", "ABCDE12345.com.gone.app", "com..gone", "com.gone app.x"]
+                .allSatisfy { OrphanScanner.identifier(in: $0) == nil }, "Only reverse-DNS names count")
+        check(OrphanScanner.vendor("com.Example.app.helper") == "com.example" && OrphanScanner.vendor("io.github.someone.tool") == "io.github.someone",
+              "Vendors, one level deeper on code hosts")
+        let installedIDs = ["com.example.app", "io.github.someone.tool"]
+        let installedVendors = Set(installedIDs.map(OrphanScanner.vendor))
+        check(OrphanScanner.belongsToInstalled("com.example.app.helper", installed: installedIDs, vendors: installedVendors)
+              && OrphanScanner.belongsToInstalled("com.example.updater", installed: installedIDs, vendors: installedVendors)
+              && OrphanScanner.belongsToInstalled("com.amplitude.storage.x", installed: [], vendors: [])
+              && OrphanScanner.belongsToInstalled("com.ookla.speedtest-cli", installed: [], vendors: [])
+              && !OrphanScanner.belongsToInstalled("io.github.other.tool", installed: installedIDs, vendors: installedVendors)
+              && !OrphanScanner.belongsToInstalled("com.gone.app", installed: installedIDs, vendors: installedVendors),
+              "Installed apps, their vendors, SDK data and command-line tools are left alone")
+        let orphanHome = "orphans/home/Library/", orphanRoot = "orphans/root/Library/"
+        for path in ["Preferences/com.gone.app.plist", "HTTPStorages/com.gone.app.binarycookies", "Preferences/com.example.app.plist",
+                     "Preferences/com.example.updater.plist", "Caches/com.registered.app", "Caches/com.amplitude.storage.x"] {
+            make(orphanHome + path)
+        }
+        for path in ["Caches/com.gone.app", "Application Support/com.gone.app.helper", "Application Support/SomeName"] {
+            make(orphanHome + path, directory: true)
+        }
+        make(orphanHome + "LaunchAgents/com.gone.agent.plist", plist: ["Label": "com.gone.agent", "Program": "/Applications/Gone.app/Contents/MacOS/agent"])
+        make(orphanRoot + "LaunchDaemons/com.dead.daemon.plist", plist: ["Label": "com.dead.daemon", "Program": "/Library/PrivilegedHelperTools/com.dead.daemon"])
+        make(orphanRoot + "LaunchDaemons/com.live.daemon.plist", plist: ["Label": "com.live.daemon", "Program": "/Library/PrivilegedHelperTools/com.live.daemon"])
+        make(orphanRoot + "PrivilegedHelperTools/com.live.daemon")
+        make(orphanRoot + "PrivilegedHelperTools/com.stale.helper")
+        let orphans = OrphanScanner.scan(home: scratch.appendingPathComponent("orphans/home"), root: scratch.appendingPathComponent("orphans/root"),
+                                         installedIDs: installedIDs, isRegistered: { $0 == "com.registered.app" })
+        check(orphans.map(\.bundleID) == ["com.dead.daemon", "com.gone.agent", "com.gone.app", "com.stale.helper"],
+              "Orphan groups: \(orphans.map(\.bundleID))")
+        check(orphans.first { $0.bundleID == "com.gone.app" }?.items.count == 4, "A helper's data joins its app's group")
+        check(orphans.first { $0.bundleID == "com.dead.daemon" }?.items.first?.system == true
+              && orphans.first { $0.bundleID == "com.stale.helper" }?.items.first?.kind == .helper
+              && orphans.first { $0.bundleID == "com.gone.agent" }?.items.first?.system == false,
+              "Jobs whose program is gone and unused helpers count; system items need admin")
         try? fm.removeItem(at: scratch)
 
         var cleanerReport = UninstallReport()
