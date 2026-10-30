@@ -103,6 +103,11 @@ struct OmniStatsConfig: Codable, Equatable {
     var rampDownPctPerSec: Double = 6    // slew limit falling (percent/sec)
     var deadbandPct: Double = 2          // hysteresis
     var chargeSchedules: [ChargeSchedule] = []
+    var menuBarHiding: Bool = false          // off by default: nothing changes until the user opts in
+    var menuBarAlwaysHidden: Bool = false
+    var menuBarAutoHide: Int = 15            // seconds; 0 = never
+    var menuBarHotKey: MenuBarHotKey? = nil
+    static let menuBarAutoHideChoices = [0, 5, 10, 15, 30, 60]
 
     static let defaultCurve: [CurvePoint] = [
         CurvePoint(temp: 40, pct: 0),
@@ -152,7 +157,7 @@ extension OmniStatsConfig {
              showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, showBatteryPanel, cpuWindow,
              topWidgetStyle, topWidgetWindow, netChartKind, refreshMode,
              autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct,
-             chargeSchedules
+             chargeSchedules, menuBarHiding, menuBarAlwaysHidden, menuBarAutoHide, menuBarHotKey
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -183,6 +188,10 @@ extension OmniStatsConfig {
         // One malformed schedule (e.g. from a future version) must not discard the rest.
         cfg.chargeSchedules   = (try? c.decodeIfPresent([Lossy<ChargeSchedule>].self, forKey: .chargeSchedules))?
             .compactMap(\.value) ?? cfg.chargeSchedules
+        cfg.menuBarHiding       = try c.decodeIfPresent(Bool.self, forKey: .menuBarHiding)       ?? cfg.menuBarHiding
+        cfg.menuBarAlwaysHidden = try c.decodeIfPresent(Bool.self, forKey: .menuBarAlwaysHidden) ?? cfg.menuBarAlwaysHidden
+        cfg.menuBarAutoHide     = try c.decodeIfPresent(Int.self,  forKey: .menuBarAutoHide)     ?? cfg.menuBarAutoHide
+        cfg.menuBarHotKey       = try? c.decodeIfPresent(MenuBarHotKey.self, forKey: .menuBarHotKey)
         self = cfg.validated()
     }
 
@@ -209,6 +218,7 @@ extension OmniStatsConfig {
         }
         cfg.curve = points.count >= 2 ? points : Self.defaultCurve
         cfg.chargeSchedules = Array(chargeSchedules.filter(\.isValid).prefix(16))
+        if !Self.menuBarAutoHideChoices.contains(menuBarAutoHide) { cfg.menuBarAutoHide = 15 }
         return cfg
     }
 }

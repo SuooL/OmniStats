@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Carbon.HIToolbox
 
 @main
 struct LogicTests {
@@ -462,9 +463,41 @@ struct LogicTests {
         check(ran.count == 1 && relaunched.nextFire == at(9, 7), "A relaunch resumes from the persisted last check")
         scheduleDefaults.removePersistentDomain(forName: scheduleSuite)
 
+        // Menu-bar icon hiding.
+        check(MenuBarLayout.collapsedLength(screenWidths: [1728, 1000]) == 3456
+              && MenuBarLayout.collapsedLength(screenWidths: [6016]) == 10_000
+              && MenuBarLayout.collapsedLength(screenWidths: [200]) == 500
+              && MenuBarLayout.collapsedLength(screenWidths: []) == 2000, "Divider width covers every screen, capped at 10,000 pt")
+        check(MenuBarLayout.isOrdered(toggle: 500, divider: 400, alwaysHidden: nil, usesAlwaysHidden: false)
+              && MenuBarLayout.isOrdered(toggle: 500, divider: 400, alwaysHidden: 300, usesAlwaysHidden: true), "Dividers left of ‹ may hide")
+        check(!MenuBarLayout.isOrdered(toggle: 500, divider: 600, alwaysHidden: nil, usesAlwaysHidden: false)
+              && !MenuBarLayout.isOrdered(toggle: 500, divider: 400, alwaysHidden: 450, usesAlwaysHidden: true)
+              && !MenuBarLayout.isOrdered(toggle: 500, divider: 400, alwaysHidden: nil, usesAlwaysHidden: true)
+              && !MenuBarLayout.isOrdered(toggle: nil, divider: 400, alwaysHidden: nil, usesAlwaysHidden: false),
+              "A misplaced or missing divider must never hide ‹ itself")
+        check(MenuBarLayout.isSupported(majorVersion: 13) && MenuBarLayout.isSupported(majorVersion: 26)
+              && !MenuBarLayout.isSupported(majorVersion: 27), "Divider hiding is off on macOS 27")
+        let screens = [CGRect(x: 0, y: 0, width: 1728, height: 1117), CGRect(x: -1000, y: -178, width: 1000, height: 1600)]
+        check(MenuBarLayout.pointerInMenuBar(CGPoint(x: 900, y: 1110), screens: screens)
+              && MenuBarLayout.pointerInMenuBar(CGPoint(x: -500, y: 1410), screens: screens)
+              && !MenuBarLayout.pointerInMenuBar(CGPoint(x: 900, y: 600), screens: screens), "Pointer on any menu bar defers auto-hide")
+        let shortcut = MenuBarHotKey(keyCode: 11, flags: [.command, .option], characters: "b")
+        check(shortcut?.display == "⌥⌘B" && shortcut?.modifiers == UInt32(cmdKey | optionKey) && shortcut?.keyCode == 11,
+              "Shortcut capture and display")
+        check(MenuBarHotKey(keyCode: 49, flags: [.control, .shift], characters: " ")?.display == "⌃⇧Space", "Named keys")
+        check(MenuBarHotKey(keyCode: 11, flags: [], characters: "b") == nil
+              && MenuBarHotKey(keyCode: 11, flags: [.shift], characters: "b") == nil, "Shortcuts need ⌘, ⌥ or ⌃")
+        let menuBarJSON = #"{"menuBarHiding":true,"menuBarAutoHide":7,"menuBarHotKey":{"keyCode":11,"modifiers":2304,"key":"B"}}"#
+        let menuBarConfig = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data(menuBarJSON.utf8))
+        check(menuBarConfig.menuBarHiding && menuBarConfig.menuBarAutoHide == 15 && menuBarConfig.menuBarHotKey?.key == "B",
+              "Menu-bar settings decode; unknown auto-hide delays fall back to 15 s")
+        check(!oldConfig.menuBarHiding && oldConfig.menuBarHotKey == nil, "Menu-bar hiding stays off until opted in")
+        check((try? JSONDecoder().decode(OmniStatsConfig.self, from: Data(#"{"menuBarHotKey":42}"#.utf8)))?.menuBarHotKey == nil,
+              "A malformed shortcut does not break the config")
+
         let desktop = BatterySampler(isPresent: false, read: { charging })
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding")
     }
 }

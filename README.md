@@ -46,6 +46,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🎨 Dark & light "thermal instrument" themes
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
 - 🚀 Optional launch at login (General → Startup)
+- 🫥 Hide menu bar icons you rarely use behind ‹, Bartender-style, with no permissions (macOS 13–26)
 - 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow without administrator access, plus an optional charge limit with sailing mode (through the helper)
 - ⬆️ Built-in update check with optional one-click self-update
 - 🪶 Tiny native SwiftUI app — no Electron, no background bloat
@@ -149,6 +150,22 @@ closed.
   | `omnistats://settings/battery` | Open the Battery pane |
 
 - Planned, not yet available: discharging while plugged in and calibration.
+
+## Menu bar icons
+
+**Settings → Menu Bar Icons** (off by default) adds a ‹ control and a | divider
+next to OmniStats' icon. Hold ⌘ and drag the icons you rarely use to the left
+of the divider; click ‹ (or press your shortcut) to show them, and they hide
+again after the delay you choose. An optional dashed divider adds an
+always-hidden section, revealed by ⌥-clicking or right-clicking ‹.
+
+- It works like Hidden Bar: when hidden, the divider widens to push everything
+  to its left off-screen. No Accessibility or Screen Recording permission is
+  involved, so it is unaffected by ad-hoc signed updates.
+- If the divider ends up right of ‹, OmniStats refuses to hide (so ‹ can't
+  vanish) and the pane asks you to drag it back.
+- macOS 27 rebuilt the menu bar and drops over-wide items, so the feature is
+  unavailable there for now.
 
 ## Hardware-friendly control
 
