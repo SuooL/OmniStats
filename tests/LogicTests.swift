@@ -6,10 +6,10 @@ struct LogicTests {
     static func check(_ value: @autoclosure () -> Bool, _ message: String) {
         if !value() { fatalError(message) }
     }
-    static func wait(_ complete: () -> Bool, seconds: Double = 2) {
+    static func wait(_ complete: () -> Bool, seconds: Double = 2, line: UInt = #line) {
         let end = Date().addingTimeInterval(seconds)
         while !complete() && Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
-        check(complete(), "Asynchronous operation did not finish")
+        check(complete(), "Asynchronous operation at line \(line) did not finish")
     }
     @MainActor static func main() {
         _ = NSApplication.shared
@@ -127,6 +127,23 @@ struct LogicTests {
         gate.signal()
         wait { resourceSampler.hasSample }
         check(resourceReads == 2 && resourceSampler.snapshot.gpuPercent == 25, "Quick reopen must discard stale work and prime a fresh resource snapshot")
+        // Tick counters can stall for ~1 s: empty follow-ups keep warming up.
+        var warmupReads = 0
+        let warming = ResourceSampler(read: {
+            warmupReads += 1
+            return warmupReads < 4 ? ResourceSnapshot(cpuWarmingUp: true) : ResourceSnapshot(cpuPercent: 12)
+        })
+        warming.setSamplingInterval(10)
+        wait { warming.snapshot.cpuPercent == 12 }
+        check(warmupReads == 4, "Empty CPU intervals must follow up until a value arrives")
+        warming.setSamplingInterval(nil)
+        var stalledReads = 0
+        let stalled = ResourceSampler(read: { stalledReads += 1; return ResourceSnapshot(cpuWarmingUp: true) })
+        stalled.setSamplingInterval(10)
+        wait({ stalledReads > ResourceSampler.maximumWarmups }, seconds: 4)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        check(stalledReads == ResourceSampler.maximumWarmups + 1, "CPU warm-up follow-ups must be bounded")
+        stalled.setSamplingInterval(nil)
         resourceSampler.setSamplingInterval(nil)
 
         var warmingReads = 0
