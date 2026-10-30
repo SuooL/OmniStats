@@ -40,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = engine   // start the control loop
 
         let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
-                                                activity: activity, battery: battery, charge: charge, menuBar: menuBar)
+                                                activity: activity, battery: battery, charge: charge, menuBar: menuBar,
+                                                uninstaller: AppUninstaller())
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,

@@ -4,6 +4,7 @@
 APP        := OmniStats
 HELPER     := omnistats-smcd
 NETTOP     := omnistats-nettop
+CLEANER    := omnistats-cleaner
 BUILD      := build
 DIST       := dist
 SRC        := src
@@ -80,12 +81,16 @@ helper: $(BUILD)/$(HELPER)
 $(BUILD)/$(NETTOP): $(SRC)/nettop-runner.c | $(BUILD)
 	$(CLANG) -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 $< -o $@
 
+# One-shot, administrator-authorized mover for an uninstalled app's system files.
+$(BUILD)/$(CLEANER): $(SRC)/cleaner.c | $(BUILD)
+	$(CLANG) -O2 -Wall -Wextra -Werror -mmacosx-version-min=13.0 $< -o $@
+
 # --- .app bundle (signed with SIGN_ID; ad-hoc by default) ---
 # The privileged helper + LaunchDaemon plist are embedded in Contents/Resources so
 # the app can self-install them via a single native admin prompt (no Terminal needed).
 # The helper must carry the same certificate as the app: it derives its client
 # check from its own signature.
-bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
+bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(BUILD)/$(CLEANER) $(SPARKLE_FW) packaging/Info.plist packaging/com.omnistats.smcd.plist
 	@rm -rf $(DIST)/$(APP).app
 	@mkdir -p $(DIST)/$(APP).app/Contents/MacOS $(DIST)/$(APP).app/Contents/Resources $(DIST)/$(APP).app/Contents/Frameworks
 	@cp packaging/Info.plist $(DIST)/$(APP).app/Contents/Info.plist
@@ -94,6 +99,8 @@ bundle: $(BUILD)/$(APP) $(BUILD)/$(HELPER) $(BUILD)/$(NETTOP) $(SPARKLE_FW) pack
 	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(HELPER)
 	@cp $(BUILD)/$(NETTOP) $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
 	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(NETTOP)
+	@cp $(BUILD)/$(CLEANER) $(DIST)/$(APP).app/Contents/Resources/$(CLEANER)
+	@$(CODESIGN) $(DIST)/$(APP).app/Contents/Resources/$(CLEANER)
 	@cp packaging/com.omnistats.smcd.plist $(DIST)/$(APP).app/Contents/Resources/com.omnistats.smcd.plist
 	@[ -f icons/AppIcon.icns ] && cp icons/AppIcon.icns $(DIST)/$(APP).app/Contents/Resources/AppIcon.icns || echo "warn: icons/AppIcon.icns missing (run tools/gen-icon.sh)"
 	@# Embed Sparkle (ditto preserves the framework's symlinks + its existing signature).
@@ -156,13 +163,17 @@ $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) test
 $(BUILD)/helper-safety-tests: tests/helper_safety_tests.m $(SRC)/smcd.m | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) tests/helper_safety_tests.m -framework Foundation -framework IOKit -framework Security -o $@
 
+$(BUILD)/cleaner-tests: tests/cleaner_tests.c $(SRC)/cleaner.c | $(BUILD)
+	$(CLANG) -Wall -Wextra -mmacosx-version-min=13.0 tests/cleaner_tests.c -o $@
+
 $(BUILD)/control-transport-tests: tests/control_transport_tests.m $(SRC)/control.m $(SRC)/control.h | $(BUILD)
 	$(CLANG) $(OBJC_FLAGS) tests/control_transport_tests.m -framework Foundation -o $@
 
-test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests $(BUILD)/$(NETTOP)
+test-logic: $(BUILD)/logic-tests $(BUILD)/helper-safety-tests $(BUILD)/control-transport-tests $(BUILD)/cleaner-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/logic-tests
 	@$(BUILD)/helper-safety-tests
 	@$(BUILD)/control-transport-tests
+	@$(BUILD)/cleaner-tests
 	@python3 tests/nettop_lifecycle_tests.py $(BUILD)/$(NETTOP)
 
 clean:

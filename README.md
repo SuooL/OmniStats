@@ -46,6 +46,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🎨 Dark & light "thermal instrument" themes
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
 - 🚀 Optional launch at login (General → Startup)
+- 🗑 Uninstall apps together with their settings, caches, launch agents, daemons and helpers (all moved to the Trash)
 - 🫥 Hide menu bar icons you rarely use behind ‹, Bartender-style, with no permissions (macOS 13–26)
 - 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow without administrator access, plus an optional charge limit with sailing mode (through the helper)
 - ⬆️ Built-in update check with optional one-click self-update
@@ -154,6 +155,28 @@ closed.
   down at the limit automatically, or calibrate (full → hold 1 h → 15 % → full →
   hold 1 h → back to the limit, usually 6–10 h). These are deliberately not
   reachable from links or schedules.
+
+## Uninstalling apps
+
+**Settings → Uninstall Apps** lists the apps in /Applications and ~/Applications
+(Apple's own apps excluded) and finds what each one leaves behind: data,
+caches, preferences, containers, saved state, web data, launch agents and
+daemons, privileged helpers and install receipts. Everything you keep ticked
+goes to the Trash, so it can be restored.
+
+- Matching is by bundle identifier first; folders that only share the app's
+  name are labelled "By name", and generic or shared vendor folders (Google,
+  Microsoft, "Uninstaller", …) are never matched by name. Launch daemons are
+  also found by the app they point to.
+- The app itself goes first; if macOS refuses (App Management), nothing else
+  is touched and the pane says how to proceed.
+- Items in system folders are moved by `omnistats-cleaner`, a small tool that
+  runs once behind an administrator prompt. It accepts only direct children of
+  a fixed set of folders, refuses symlinks and `..`, runs no shell and moves
+  rather than deletes.
+- Other apps' containers need Full Disk Access; without it they stay unticked.
+  With ad-hoc signed releases macOS asks for it again after each update.
+- Each uninstall writes a log to `~/Library/Logs/OmniStats`.
 
 ## Menu bar icons
 
