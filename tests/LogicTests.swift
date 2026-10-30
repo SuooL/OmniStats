@@ -477,6 +477,99 @@ struct LogicTests {
         }
         L.lang = previousLanguage
 
+        // App uninstaller: matching rules.
+        check(LeftoverScanner.matchesBundleID("com.Example.App", "com.example.app")
+              && LeftoverScanner.matchesBundleID("com.example.app.helper", "com.example.app")
+              && LeftoverScanner.matchesBundleID("com.example.app_stats.sqlite3", "com.example.app"), "Bundle-ID matches and components")
+        check(!LeftoverScanner.matchesBundleID("com.example.application", "com.example.app")
+              && !LeftoverScanner.matchesBundleID("com.example.app-lite", "com.example.app")
+              && !LeftoverScanner.matchesBundleID("com.example", "com.example.app"), "A longer or sibling identifier is a different app")
+        check(LeftoverScanner.matchesGroup("group.com.example.app", "com.example.app")
+              && LeftoverScanner.matchesGroup("ABCDE12345.com.example.app", "com.example.app")
+              && !LeftoverScanner.matchesGroup("ABCDE12345.com.example.apps", "com.example.app"), "Group containers")
+        check(LeftoverScanner.matchesName("AlDente", "AlDente") && !LeftoverScanner.matchesName("Google", "Google")
+              && !LeftoverScanner.matchesName("Box", "Box") && !LeftoverScanner.matchesName("AlDente Pro", "AlDente")
+              && !LeftoverScanner.matchesName("Uninstaller", "Uninstaller") && !LeftoverScanner.matchesName("Code", "Code")
+              && LeftoverScanner.matchesName("Code", "Code", bundleID: "com.microsoft.VSCode"),
+              "Names only match when distinctive and exact")
+
+        // A scratch Applications folder, home and root.
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("omnistats-uninstall-\(UUID().uuidString)")
+        let fm = FileManager.default
+        func makeApp(_ path: String, id: String, name: String, appStore: Bool = false) {
+            let contents = scratch.appendingPathComponent(path).appendingPathComponent("Contents")
+            try! fm.createDirectory(at: contents, withIntermediateDirectories: true)
+            let info: [String: Any] = ["CFBundleIdentifier": id, "CFBundleName": name, "CFBundleShortVersionString": "1.2",
+                                       "CFBundlePackageType": "APPL"]
+            try! PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+                .write(to: contents.appendingPathComponent("Info.plist"))
+            if appStore {
+                try! fm.createDirectory(at: contents.appendingPathComponent("_MASReceipt"), withIntermediateDirectories: true)
+                fm.createFile(atPath: contents.appendingPathComponent("_MASReceipt/receipt").path, contents: Data())
+            }
+        }
+        func make(_ path: String, directory: Bool = false, plist: [String: Any]? = nil) {
+            let url = scratch.appendingPathComponent(path)
+            try! fm.createDirectory(at: directory ? url : url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let plist { try! PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: url) }
+            else if !directory { fm.createFile(atPath: url.path, contents: Data("x".utf8)) }
+        }
+        makeApp("Applications/Example.app", id: "com.example.app", name: "Example")
+        makeApp("Applications/Vendor/Tool.app", id: "com.vendor.tool", name: "Tool", appStore: true)
+        makeApp("Applications/Notes Clone.app", id: "com.apple.notesclone", name: "Notes")
+        makeApp("Applications/OmniStats.app", id: "io.github.suool.omnistats", name: "OmniStats")
+        let catalog = AppCatalog.installedApps(in: [scratch.appendingPathComponent("Applications")], excluding: "io.github.suool.omnistats")
+        check(catalog.map(\.bundleID) == ["com.example.app", "com.vendor.tool"] && catalog[1].isAppStore && catalog[0].version == "1.2",
+              "App list: one folder deep, no Apple apps, not OmniStats itself, App Store receipts")
+
+        let fakeHome = "home/Library/", fakeRoot = "root/"
+        for path in ["Application Support/com.example.app", "Application Support/Example", "Caches/com.example.app",
+                     "Containers/com.example.app", "Group Containers/ABCDE12345.com.example.app", "WebKit/com.example.app",
+                     "Saved Application State/com.example.app.savedState", "Application Support/Google"] {
+            make(fakeHome + path, directory: true)
+        }
+        for path in ["Preferences/com.example.app.plist", "Preferences/com.example.app_stats.sqlite3", "HTTPStorages/com.example.app.binarycookies",
+                     "Preferences/com.example.application.plist", "Caches/com.other.app"] { make(fakeHome + path) }
+        make(fakeHome + "LaunchAgents/com.example.app.agent.plist", plist: ["Label": "com.example.app.agent"])
+        make(fakeRoot + "Library/LaunchDaemons/com.vendor.updater.plist",
+             plist: ["Label": "com.vendor.updater", "AssociatedBundleIdentifiers": ["com.example.app"],
+                     "Program": "/Library/PrivilegedHelperTools/com.vendor.updater"])
+        make(fakeRoot + "Library/LaunchDaemons/com.unrelated.daemon.plist", plist: ["Label": "com.unrelated.daemon", "Program": "/usr/bin/true"])
+        make(fakeRoot + "Library/PrivilegedHelperTools/com.vendor.updater")
+        make(fakeRoot + "Library/PrivilegedHelperTools/com.unrelated.daemon")
+        make(fakeRoot + "Library/Application Support/Example", directory: true)
+        make(fakeRoot + "private/var/db/receipts/com.example.app.pkg.bom")
+        let scanner = LeftoverScanner(home: scratch.appendingPathComponent("home"), root: scratch.appendingPathComponent("root"))
+        let found = scanner.scan(catalog[0])
+        let names = Set(found.map { $0.url.lastPathComponent })
+        check(names == ["Example.app", "com.example.app", "Example", "com.example.app.savedState", "com.example.app.plist",
+                        "com.example.app_stats.sqlite3", "com.example.app.binarycookies", "ABCDE12345.com.example.app",
+                        "com.example.app.agent.plist", "com.vendor.updater.plist", "com.vendor.updater", "com.example.app.pkg.bom"],
+              "Leftovers found: \(names.sorted())")
+        check(found.filter(\.byName).map(\.url.lastPathComponent) == ["Example", "Example"], "Name matches are flagged")
+        check(found.filter { $0.url.lastPathComponent == "com.example.app" }.count == 4
+              && found.filter { $0.url.lastPathComponent == "Example" }.count == 2, "Same names in different folders are separate items")
+        check(found.first { $0.kind == .launchDaemon }?.system == true && found.first { $0.kind == .helper }?.system == true
+              && found.first { $0.kind == .container }?.protected == true && found.first { $0.kind == .launchAgent }?.system == false,
+              "Daemons, helpers and system folders need admin; containers need Full Disk Access")
+        check(!names.contains("Google") && !names.contains("com.example.application.plist") && !names.contains("com.unrelated.daemon"),
+              "Shared vendor folders, look-alike identifiers and unrelated daemons stay")
+        check(LeftoverScanner.size(of: scratch.appendingPathComponent(fakeHome + "Preferences/com.example.app.plist")) ?? 0 > 0,
+              "Sizes are measured")
+        try? fm.removeItem(at: scratch)
+
+        var cleanerReport = UninstallReport()
+        cleanerReport.absorbCleanerOutput("moved\t/Library/LaunchDaemons/a.plist\t/Users/x/.Trash/R/LaunchDaemons/a.plist\n"
+            + "skipped\t/etc/hosts\toutside the allowed folders\nnoise line\n")
+        check(cleanerReport.destinations["/Library/LaunchDaemons/a.plist"] == "/Users/x/.Trash/R/LaunchDaemons/a.plist",
+              "Cleaner destinations are kept for the log")
+        check(cleanerReport.moved == ["/Library/LaunchDaemons/a.plist"]
+              && cleanerReport.skipped == [.init(path: "/etc/hosts", reason: "outside the allowed folders")], "Cleaner output parsing")
+        let folder = AppUninstaller.trashFolderName(for: InstalledApp(url: URL(fileURLWithPath: "/Applications/系统 Tool.app"),
+            bundleID: "x", name: "系统 Tool/../x", version: nil, isAppStore: false), date: Date(timeIntervalSince1970: 0))
+        check(folder.hasPrefix("OmniStats Removed ") && !folder.contains("/") && !folder.contains("系")
+              && folder.allSatisfy { $0.isASCII }, "Trash folder names are safe for the cleaner: \(folder)")
+
         // Menu-bar icon hiding.
         check(MenuBarLayout.collapsedLength(screenWidths: [1728, 1000]) == 3456
               && MenuBarLayout.collapsedLength(screenWidths: [6016]) == 10_000
@@ -512,6 +605,6 @@ struct LogicTests {
         let desktop = BatterySampler(isPresent: false, read: { charging })
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding, uninstaller scanning")
     }
 }

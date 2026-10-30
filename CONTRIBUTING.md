@@ -113,6 +113,7 @@ the real app or a long-running leak test.
 | `src/sensors.{h,m}`     | Temperature/fan/power sampling → clean C API       |
 | `src/control.{h,m}`     | Persistent client to the privileged helper         |
 | `src/smcd.m`            | `omnistats-smcd` — root helper: fans + charge limit |
+| `src/cleaner.c`         | `omnistats-cleaner` — one-shot mover for an uninstalled app's system files |
 | `src/*.swift`           | SwiftUI app (Theme, Config, Model/Engine, Curve, Panels, Updater) |
 | `packaging/`            | LaunchDaemon plist, Info.plist, install scripts    |
 | `tools/`                | Icon generation, release signing certificate       |

@@ -487,16 +487,19 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let battery: BatterySampler
     private let charge: ChargeController
     private let menuBar: MenuBarManager?
+    private let uninstaller: AppUninstaller?
     private let settingsState = SettingsState()
     private var savedFrame: NSRect?
     private(set) var window: NSWindow?
 
     init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater, activity: ActivityState = ActivityState(),
-         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil, menuBar: MenuBarManager? = nil) {
+         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil, menuBar: MenuBarManager? = nil,
+         uninstaller: AppUninstaller? = nil) {
         self.mon = mon; self.store = store; self.engine = engine; self.updater = updater
         self.activity = activity; self.battery = battery
         self.charge = charge ?? ChargeController(monitor: mon)
         self.menuBar = menuBar
+        self.uninstaller = uninstaller
     }
 
     func show(section: SettingsSection? = nil) {
@@ -504,7 +507,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         if window == nil {
             let host = NSHostingController(
                 rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater,
-                                       battery: battery, charge: charge, menuBar: menuBar, state: settingsState))
+                                       battery: battery, charge: charge, menuBar: menuBar, uninstaller: uninstaller,
+                                       state: settingsState))
             let w = NSWindow(contentViewController: host)
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.title = L.t("settings.window")
