@@ -394,9 +394,77 @@ struct LogicTests {
               "Top Up is sent and the status refreshed")
         chargeController.setPollingInterval(nil)
         check(chargeController.pollingInterval == nil, "Hidden charge control stops polling")
+        // omnistats:// automation links.
+        func link(_ text: String) -> AutomationCommand? { URL(string: text).flatMap(AutomationCommand.init(url:)) }
+        check(link("omnistats://battery/limit?value=80") == .setLimit(80) && link("OMNISTATS://Battery/Limit?Value=75") == .setLimit(75),
+              "Limit links, case-insensitive")
+        check(link("omnistats://battery/enable") == .enableLimit(true) && link("omnistats://battery/disable") == .enableLimit(false), "Enable links")
+        check(link("omnistats://battery/topup") == .topUp(true) && link("omnistats://battery/topup?enabled=0") == .topUp(false), "Top Up links")
+        check(link("omnistats://battery/led?mode=off") == .led(.off) && link("omnistats://settings/battery") == .openBatterySettings, "LED and settings links")
+        for bad in ["omnistats://battery/limit?value=19", "omnistats://battery/limit?value=101", "omnistats://battery/limit",
+                    "omnistats://battery/discharge", "omnistats://battery/topup?enabled=maybe", "omnistats://battery/led?mode=blink",
+                    "https://battery/limit?value=80", "omnistats://fans/limit?value=80"] {
+            check(link(bad) == nil, "Rejected link: \(bad)")
+        }
+        check(AutomationCommand.setLimit(80).helperCommand == "BSET enabled=1 limit=80"
+              && AutomationCommand.enableLimit(false).helperCommand == "BSET enabled=0"
+              && AutomationCommand.topUp(true).helperCommand == "BTOPUP 1" && AutomationCommand.led(.status).helperCommand == "BSET led=1"
+              && AutomationCommand.openBatterySettings.helperCommand == nil, "Links become partial helper commands")
+
+        // Schedules, on a fixed UTC Gregorian calendar.
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        func at(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            utc.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
+        }
+        check(utc.component(.weekday, from: at(2, 0)) == 2, "2 Nov 2026 is a Monday")
+        let mondayTopUp = ChargeSchedule(weekdays: [2], hour: 7, minute: 0, action: .topUp)
+        check(ChargeScheduler.occurrence(of: mondayTopUp, after: at(1, 23), upTo: at(2, 7, 30), calendar: utc) == at(2, 7),
+              "A schedule fires once its time has passed")
+        check(ChargeScheduler.occurrence(of: mondayTopUp, after: at(2, 7), upTo: at(2, 7, 30), calendar: utc) == nil,
+              "The window excludes its start, so an action never runs twice")
+        check(ChargeScheduler.occurrence(of: mondayTopUp, after: at(8, 23), upTo: at(9, 6, 59), calendar: utc) == nil, "Not yet due")
+        check(ChargeScheduler.due([mondayTopUp], from: at(2, 6), to: at(2, 20), calendar: utc).isEmpty,
+              "Older than the 12-hour catch-up window: skipped")
+        var off = mondayTopUp; off.enabled = false
+        check(ChargeScheduler.due([off], from: at(1, 23), to: at(2, 8), calendar: utc).isEmpty, "Disabled schedules never fire")
+        let evening = ChargeSchedule(weekdays: Set(1...7), hour: 22, minute: 30, action: .setLimit, limit: 80)
+        let morning = ChargeSchedule(weekdays: Set(1...7), hour: 6, minute: 0, action: .disable)
+        check(ChargeScheduler.due([morning, evening], from: at(1, 22), to: at(2, 7), calendar: utc).map(\.action) == [.setLimit, .disable],
+              "Due actions run oldest first")
+        check(ChargeScheduler.next([mondayTopUp], after: at(2, 8), calendar: utc) == at(9, 7), "Next weekly occurrence")
+        check(ChargeScheduler.next([mondayTopUp, morning], after: at(2, 8), calendar: utc) == at(3, 6), "Earliest next occurrence")
+        check(ChargeSchedule(hour: 24).isValid == false && ChargeSchedule(weekdays: []).isValid == false
+              && ChargeSchedule(weekdays: [0]).isValid == false && ChargeSchedule(limit: 10).isValid == false, "Schedule validation")
+
+        let scheduleJSON = """
+        {"chargeSchedules":[{"id":"\(UUID().uuidString)","enabled":true,"weekdays":[2],"hour":7,"minute":0,"action":"topUp","limit":80},
+          {"id":"\(UUID().uuidString)","enabled":true,"weekdays":[2],"hour":7,"minute":0,"action":"launchRockets","limit":80},
+          {"id":"\(UUID().uuidString)","enabled":true,"weekdays":[2],"hour":31,"minute":0,"action":"topUp","limit":80}]}
+        """
+        let scheduleConfig = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data(scheduleJSON.utf8))
+        check(scheduleConfig.chargeSchedules.count == 1 && scheduleConfig.chargeSchedules[0].action == .topUp,
+              "Unknown or invalid schedules are dropped without losing the rest")
+
+        let scheduleSuite = "OmniStats.ScheduleTests.\(getpid())"
+        let scheduleDefaults = UserDefaults(suiteName: scheduleSuite)!
+        scheduleDefaults.removePersistentDomain(forName: scheduleSuite)
+        let scheduleStore = ConfigStore(defaults: scheduleDefaults)
+        scheduleStore.config.chargeSchedules = [mondayTopUp]
+        var scheduleClock = at(2, 6)
+        var ran: [AutomationCommand] = []
+        let runner = ChargeScheduleRunner(store: scheduleStore, defaults: scheduleDefaults, calendar: utc, now: { scheduleClock }) { ran.append($0) }
+        check(ran.isEmpty && runner.nextFire == at(2, 7), "Nothing due at start; the timer targets the next occurrence")
+        scheduleClock = at(2, 7, 1); runner.check()
+        check(ran == [.topUp(true)] && runner.nextFire == at(9, 7), "The runner fires a due action once and re-arms")
+        runner.check()
+        check(ran.count == 1, "Re-checking does not repeat an action")
+        let relaunched = ChargeScheduleRunner(store: scheduleStore, defaults: scheduleDefaults, calendar: utc, now: { scheduleClock }) { ran.append($0) }
+        check(ran.count == 1 && relaunched.nextFire == at(9, 7), "A relaunch resumes from the persisted last check")
+        scheduleDefaults.removePersistentDomain(forName: scheduleSuite)
+
         let desktop = BatterySampler(isPresent: false, read: { charging })
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing")
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules")
     }
 }

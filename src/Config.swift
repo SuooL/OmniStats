@@ -102,6 +102,7 @@ struct OmniStatsConfig: Codable, Equatable {
     var rampUpPctPerSec: Double = 12     // slew limit rising  (percent/sec)
     var rampDownPctPerSec: Double = 6    // slew limit falling (percent/sec)
     var deadbandPct: Double = 2          // hysteresis
+    var chargeSchedules: [ChargeSchedule] = []
 
     static let defaultCurve: [CurvePoint] = [
         CurvePoint(temp: 40, pct: 0),
@@ -150,7 +151,8 @@ extension OmniStatsConfig {
         case fahrenheit, appearance, language, accent, menuNumberColor,
              showTempInMenuBar, showNetworkInMenuBar, showNetworkPanel, showProcesses, showBatteryPanel, cpuWindow,
              topWidgetStyle, topWidgetWindow, netChartKind, refreshMode,
-             autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct
+             autoCheckUpdates, autoDownloadUpdates, mode, manualPct, curve, rampUpPctPerSec, rampDownPctPerSec, deadbandPct,
+             chargeSchedules
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -178,6 +180,9 @@ extension OmniStatsConfig {
         cfg.rampUpPctPerSec   = try c.decodeIfPresent(Double.self,        forKey: .rampUpPctPerSec)   ?? cfg.rampUpPctPerSec
         cfg.rampDownPctPerSec = try c.decodeIfPresent(Double.self,        forKey: .rampDownPctPerSec) ?? cfg.rampDownPctPerSec
         cfg.deadbandPct       = try c.decodeIfPresent(Double.self,        forKey: .deadbandPct)       ?? cfg.deadbandPct
+        // One malformed schedule (e.g. from a future version) must not discard the rest.
+        cfg.chargeSchedules   = (try? c.decodeIfPresent([Lossy<ChargeSchedule>].self, forKey: .chargeSchedules))?
+            .compactMap(\.value) ?? cfg.chargeSchedules
         self = cfg.validated()
     }
 
@@ -203,6 +208,7 @@ extension OmniStatsConfig {
             if points.count == 32 { break }
         }
         cfg.curve = points.count >= 2 ? points : Self.defaultCurve
+        cfg.chargeSchedules = Array(chargeSchedules.filter(\.isValid).prefix(16))
         return cfg
     }
 }
@@ -240,4 +246,10 @@ final class ConfigStore: ObservableObject {
             defaults.set(data, forKey: key)
         }
     }
+}
+
+// Decodes an array element as nil instead of failing the whole array.
+struct Lossy<Value: Decodable>: Decodable {
+    let value: Value?
+    init(from decoder: Decoder) throws { value = try? Value(from: decoder) }
 }

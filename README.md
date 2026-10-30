@@ -134,8 +134,21 @@ closed.
 - **MagSafe LED**: leave it to macOS, show the charge state (orange while
   charging, green otherwise), or turn it off. Choosing "System" again hands it
   back to macOS.
-- Planned, not yet available: discharging while plugged in, calibration and
-  schedules.
+- **Schedules** (Battery pane) repeat an action on chosen weekdays and times:
+  set a limit, charge to full, or turn the limit on or off. They run while
+  OmniStats is running; anything missed during sleep runs on wake (within 12 h).
+- **Automation**: Shortcuts' "Open URL" action (or `open` in Terminal) can drive
+  the limit. Only charge-limit actions are exposed this way:
+
+  | Link | Action |
+  |---|---|
+  | `omnistats://battery/limit?value=80` | Turn the limit on at 80 % (20–100) |
+  | `omnistats://battery/enable`, `…/disable` | Turn the limit on or off |
+  | `omnistats://battery/topup` (`?enabled=0` to cancel) | Charge to full until unplugged |
+  | `omnistats://battery/led?mode=status` (`system`, `off`) | MagSafe LED mode |
+  | `omnistats://settings/battery` | Open the Battery pane |
+
+- Planned, not yet available: discharging while plugged in and calibration.
 
 ## Hardware-friendly control
 

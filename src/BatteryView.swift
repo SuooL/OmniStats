@@ -117,6 +117,7 @@ struct BatteryPane: View {
                 status(battery)
                 ChargeControlCard(control: charge, mon: mon, external: battery.externalPower,
                                   fahrenheit: store.config.fahrenheit)
+                ChargeScheduleCard(store: store)
                 HStack(alignment: .top, spacing: 18) {
                     flow(battery)
                     health(battery)
@@ -383,5 +384,112 @@ struct ChargeControlCard: View {
     }
     private func alert(_ text: String, _ color: Color) -> some View {
         Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// Repeating charge actions; the app runs them (see ChargeScheduleRunner).
+struct ChargeScheduleCard: View {
+    @ObservedObject var store: ConfigStore
+    private var calendar: Calendar {
+        var calendar = Calendar.current
+        calendar.locale = Locale(identifier: L.lang.resolved.localeIdentifier)
+        return calendar
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(L.t("sched.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                Spacer()
+                Button(L.t("sched.add")) { store.config.chargeSchedules.append(ChargeSchedule()) }
+                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                    .disabled(store.config.chargeSchedules.count >= 16)
+            }
+            if store.config.chargeSchedules.isEmpty {
+                note(L.t("sched.empty"))
+            }
+            ForEach(store.config.chargeSchedules) { schedule in
+                row(schedule)
+                Divider().overlay(Theme.line)
+            }
+            note(L.t("sched.note"))
+            Text(L.t("sched.shortcuts")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16).frame(maxWidth: 640, alignment: .leading)
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+        .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+    }
+
+    private func row(_ schedule: ChargeSchedule) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                DatePicker("", selection: time(schedule), displayedComponents: .hourAndMinute)
+                    .labelsHidden().frame(width: 110)
+                Picker("", selection: binding(schedule, \.action)) {
+                    ForEach(ChargeSchedule.Action.allCases) { action in
+                        Text(L.t("sched.action.\(action.rawValue)")).tag(action)
+                    }
+                }
+                .labelsHidden().frame(width: 140)
+                if schedule.action == .setLimit {
+                    Stepper(value: binding(schedule, \.limit), in: ChargeLimitSettings.limitRange, step: 5) {
+                        Text("\(schedule.limit)%").font(Theme.telemetry(12)).foregroundStyle(Theme.ink)
+                    }
+                }
+                Spacer()
+                Button { store.config.chargeSchedules.removeAll { $0.id == schedule.id } } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless).foregroundStyle(Theme.ink3).help(L.t("sched.delete"))
+                Toggle("", isOn: binding(schedule, \.enabled)).toggleStyle(.switch).labelsHidden().controlSize(.small)
+            }
+            weekdays(schedule)
+        }
+        .opacity(schedule.enabled ? 1 : 0.55)
+    }
+
+    // Seven chips starting at the locale's first weekday.
+    private func weekdays(_ schedule: ChargeSchedule) -> some View {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let order = (0..<7).map { (calendar.firstWeekday - 1 + $0) % 7 + 1 }
+        return HStack(spacing: 6) {
+            ForEach(order, id: \.self) { day in
+                let on = schedule.weekdays.contains(day)
+                Button {
+                    var days = schedule.weekdays
+                    if on { days.remove(day) } else { days.insert(day) }
+                    if !days.isEmpty { update(schedule) { $0.weekdays = days } }
+                } label: {
+                    Text(symbols[day - 1]).font(.system(size: 11, weight: .medium))
+                        .frame(width: 26, height: 22)
+                        .background(on ? Theme.accent.opacity(0.22) : Theme.line.opacity(0.5))
+                        .foregroundStyle(on ? Theme.accent : Theme.ink3)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func update(_ schedule: ChargeSchedule, _ change: (inout ChargeSchedule) -> Void) {
+        guard let index = store.config.chargeSchedules.firstIndex(where: { $0.id == schedule.id }) else { return }
+        change(&store.config.chargeSchedules[index])
+    }
+    private func binding<T>(_ schedule: ChargeSchedule, _ keyPath: WritableKeyPath<ChargeSchedule, T>) -> Binding<T> {
+        Binding(get: { store.config.chargeSchedules.first { $0.id == schedule.id }?[keyPath: keyPath] ?? schedule[keyPath: keyPath] },
+                set: { value in update(schedule) { $0[keyPath: keyPath] = value } })
+    }
+    private func time(_ schedule: ChargeSchedule) -> Binding<Date> {
+        Binding(get: {
+            Calendar.current.date(bySettingHour: schedule.hour, minute: schedule.minute, second: 0, of: Date()) ?? Date()
+        }, set: { date in
+            let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+            update(schedule) { $0.hour = parts.hour ?? $0.hour; $0.minute = parts.minute ?? $0.minute }
+        })
+    }
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
     }
 }

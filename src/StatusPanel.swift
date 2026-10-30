@@ -497,7 +497,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         self.charge = charge ?? ChargeController(monitor: mon)
     }
 
-    func show() {
+    func show(section: SettingsSection? = nil) {
+        if let section { settingsState.section = section }
         if window == nil {
             let host = NSHostingController(
                 rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater,

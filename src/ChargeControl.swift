@@ -158,6 +158,7 @@ final class ChargeController: ObservableObject {
 
     func apply(_ settings: ChargeLimitSettings) { send(settings.command) }
     func setTopUp(_ enabled: Bool) { send("BTOPUP \(enabled ? 1 : 0)") }
+    func perform(_ command: AutomationCommand) { command.helperCommand.map(send) }
 
     private func send(_ command: String) {
         request(command) { [weak self] reply in

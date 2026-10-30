@@ -14,6 +14,14 @@
     <key>LSMinimumSystemVersion</key>    <string>13.0</string>
     <key>LSUIElement</key>               <true/>
     <key>NSHumanReadableCopyright</key>  <string>MIT License</string>
+    <!-- omnistats:// links for Shortcuts and scripts (charge-limit actions only). -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>       <string>io.github.suool.omnistats</string>
+            <key>CFBundleURLSchemes</key>    <array><string>omnistats</string></array>
+        </dict>
+    </array>
 
     <!-- Sparkle auto-update. Appcast is published as a release asset, so the feed
          URL never touches the rate-limited api.github.com. -->
