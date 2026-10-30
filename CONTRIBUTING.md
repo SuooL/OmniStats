@@ -42,16 +42,20 @@ the in-app updater compares against it.
 
 ## Release signing
 
-Releases are signed with one fixed **self-signed** certificate, not an Apple
-Developer ID (so they are still not notarized). macOS keys privacy grants
-(Accessibility, Full Disk Access, …) to the app's designated requirement; an
-ad-hoc signature pins that to a single build, so every update would silently
-revoke them. With the fixed certificate the requirement is
+Releases are **ad-hoc signed** by default and not notarized. macOS keys privacy
+grants (Accessibility, Full Disk Access, …) to the app's designated requirement,
+and an ad-hoc signature pins that to one build, so users re-grant permissions
+after an update. Features that need such permissions must detect a lost grant
+and guide the user.
+
+Signing with one fixed **self-signed** certificate is optional. When the
+`MACOS_SIGN_P12` secrets exist, the release workflow signs with it, and the
+requirement becomes
 `identifier "io.github.suool.omnistats" and certificate leaf = H"<sha1>"` for
 every release. The root helper derives its client check from the same
 certificate: a certificate-signed helper only accepts the app signed with it.
 
-One-time setup (maintainer):
+To opt in (maintainer, one time):
 
 ```bash
 bash tools/make-signing-cert.sh            # writes to ~/OmniStats-signing, never the repo
@@ -60,9 +64,9 @@ gh secret set MACOS_SIGN_P12_PASSWORD < ~/OmniStats-signing/omnistats-release.p1
 ```
 
 Back up the `.p12` and its password. Replacing the certificate changes the
-requirement, so every user would have to grant permissions again. The release
-workflow refuses to publish without these secrets and checks that the app and
-helper carry the certificate.
+requirement, so every user would have to grant permissions again. With the
+secrets present, the release workflow checks that the app and helper carry the
+certificate; without them it publishes an ad-hoc signed build.
 
 `make` signs ad-hoc by default (`SIGN_ID=-`). To sign a local build with an
 identity from your keychain, pass `make SIGN_ID="OmniStats Release"`. A

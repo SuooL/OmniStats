@@ -67,8 +67,9 @@ blocked: on macOS 15 and later choose **System Settings → Privacy & Security �
 Open Anyway**; on macOS 13–14 right-click the app → **Open**. Or run
 `xattr -dr com.apple.quarantine /Applications/OmniStats.app`.
 
-Releases are signed with a fixed OmniStats certificate (self-signed, not Apple
-Developer ID), so permissions you grant macOS keep working across updates.
+Releases are ad-hoc signed and not notarized. macOS ties the privacy permissions
+you grant (such as Full Disk Access) to one exact build, so after an update you
+may need to grant them again.
 
 ### Build from source
 
@@ -150,9 +151,10 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
 - A **watchdog** reverts every fan to firmware auto if the app disconnects or
   hangs; quitting the app also reverts.
 - Only the tiny `omnistats-smcd` helper runs as root; it verifies the peer uid so
-  other local accounts can't hijack your fans. In release builds it also checks
-  the connecting app's code signature, so only OmniStats signed with the same
-  certificate can send it commands.
+  other local accounts can't hijack your fans. When the helper is signed with a
+  certificate, it also checks the connecting app's code signature, so only
+  OmniStats signed with the same certificate can send it commands. Ad-hoc builds,
+  including current releases, rely on the console-user check.
 - Charge control fails towards charging: the helper allows charging again when
   it exits (uninstall, shutdown), when the battery can't be read, and when the
   limit is turned off. It writes nothing while another charge manager (AlDente,
