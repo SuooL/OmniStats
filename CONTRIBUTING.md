@@ -89,6 +89,7 @@ make run        # build and launch
 make test       # CLI smoke test of the sensor/control layer
 make test-logic   # hardware-isolated logic, socket transport, and helper safety regressions
 make test-runtime # AppKit regressions with simulated sensors (logged-in macOS desktop)
+make ui-snapshots # every Settings page in zh/en/ja × dark/light → build/ui-snapshots (needs Screen Recording for the terminal)
 make clean
 ```
 

@@ -86,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--theme"), i + 1 < args.count {
-            store.config.appearance = (args[i+1] == "light") ? .light : .dark
+            store.config.appearance = AppearanceMode(rawValue: args[i+1]) ?? .dark
         }
         if let i = args.firstIndex(of: "--mode"), i + 1 < args.count,
            let m = FanMode(rawValue: args[i+1]) {

@@ -43,7 +43,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🧊 **Hardware-friendly control**: EMA temperature smoothing + hysteresis
   deadband + slew-rate limiting — fans never surge on a 1° blip
 - 🎛 One-click curve presets (Quiet / Balanced / Cooler)
-- 🎨 Dark & light "thermal instrument" themes
+- 🎨 Dark & light "thermal instrument" themes, or follow the system
 - 🔒 In-app privileged-helper install (single native prompt, no Terminal)
 - 🚀 Optional launch at login (General → Startup)
 - 🗑 Uninstall apps together with their settings, caches, launch agents, daemons and helpers (all moved to the Trash)

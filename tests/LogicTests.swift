@@ -66,6 +66,17 @@ struct LogicTests {
         check(sanitized.curvePct(at: .nan).isNaN, "Invalid temperature must not select the hottest curve point")
         let oldConfig = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data("{}".utf8))
         check(oldConfig.refreshMode == .balanced, "Old configs must acquire the new default")
+        check(RefreshMode.responsive.intervals == (3, 1, 5) && RefreshMode.economical.intervals == (30, 10, 30),
+              "General's refresh table shows the intervals sampling uses")
+        let presentation = (Theme.mode, Theme.accentPreset, L.lang)
+        let followSystem = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data(#"{"appearance":"system"}"#.utf8))
+        check(followSystem.appearance == .system && oldConfig.appearance == .dark, "Follow-system decodes; old configs stay dark")
+        syncPresentation(followSystem)
+        check(Theme.mode != .system && AppearanceMode.system.colorScheme == (Theme.mode == .light ? .light : .dark),
+              "Following the system resolves to dark or light")
+        syncPresentation(oldConfig)
+        check(Theme.mode == .dark && AppearanceMode.light.colorScheme == .light, "A fixed appearance wins over the system")
+        (Theme.mode, Theme.accentPreset, L.lang) = presentation
 
         for values: [CGFloat] in [[0, 1, 8, 8, 3, 0], [10, 10, 10], [100, 0, 100], [0, 1]] {
             let points = values.enumerated().map { CGPoint(x: CGFloat($0.offset * $0.offset + $0.offset), y: $0.element) }

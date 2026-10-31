@@ -8,6 +8,8 @@ enum Repo {
     static let name  = "OmniStats"
     static var url: String { "https://github.com/\(owner)/\(name)" }
     static var releasesURL: String { url + "/releases" }
+    static var issuesURL: String { url + "/issues" }
+    static var licenseURL: String { url + "/blob/main/LICENSE" }
 }
 
 // Thin SwiftUI-friendly wrapper over Sparkle's SPUUpdater.
@@ -49,6 +51,7 @@ final class Updater: NSObject, ObservableObject {
     }
 
     func checkForUpdates()  { updater.checkForUpdates() }
-    func openRepo()         { if let u = URL(string: Repo.url) { NSWorkspace.shared.open(u) } }
-    func openReleasePage()  { if let u = URL(string: Repo.releasesURL) { NSWorkspace.shared.open(u) } }
+    func open(_ link: String) { if let u = URL(string: link) { NSWorkspace.shared.open(u) } }
+    func openRepo()           { open(Repo.url) }
+    func openReleasePage()    { open(Repo.releasesURL) }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // MARK: - Formatting
 func fmtTemp(_ c: Float, fahrenheit: Bool) -> String {
@@ -239,6 +240,7 @@ final class ConfigStore: ObservableObject {
     private let key = "OmniStatsConfig.v1"
     private let defaults: UserDefaults
     private var pendingSave: DispatchWorkItem?
+    private var systemAppearance: NSKeyValueObservation?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -249,6 +251,16 @@ final class ConfigStore: ObservableObject {
             config = OmniStatsConfig()
         }
         syncPresentation(config)
+        // "Follow system" re-resolves when macOS switches between light and dark;
+        // the published change re-renders views and the menu-bar readout.
+        systemAppearance = NSApp?.observe(\.effectiveAppearance) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                guard let self, self.config.appearance == .system,
+                      self.config.appearance.resolved != Theme.mode else { return }
+                syncPresentation(self.config)
+                self.objectWillChange.send()
+            }
+        }
     }
     func flush() {
         pendingSave?.cancel(); pendingSave = nil
