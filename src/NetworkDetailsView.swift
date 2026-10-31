@@ -10,7 +10,7 @@ struct NetworkDetailsView: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(L.t("m.network")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                    Text(L.t("m.network")).font(Theme.Typo.heading).foregroundStyle(Theme.ink)
                     Text(L.t("network.lastHour")).font(.system(size: 10)).foregroundStyle(Theme.ink3)
                 }
                 Spacer()
@@ -42,7 +42,7 @@ struct NetworkDetailsView: View {
 
     private var processList: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(L.t("m.netProcHeader")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
+            Text(L.t("m.netProcHeader")).font(Theme.Typo.caption).foregroundStyle(Theme.ink2)
                 .frame(height: 14)
             processRows
         }
@@ -53,11 +53,11 @@ struct NetworkDetailsView: View {
 
     @ViewBuilder private var processRows: some View {
         if netProc.state == .warmingUp {
-            Text(L.t("network.warmingUp")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            Text(L.t("network.warmingUp")).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
         } else if netProc.state == .unavailable {
-            Text(L.t("network.unavailable")).font(.system(size: 11)).foregroundStyle(.orange)
+            Label(L.t("network.unavailable"), systemImage: "exclamationmark.triangle.fill").font(Theme.Typo.caption).foregroundStyle(Theme.warning)
         } else if netProc.top.isEmpty {
-            Text(L.t("m.netIdle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            Text(L.t("m.netIdle")).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
         } else {
             ForEach(netProc.top) { process in processRow(process) }
         }
@@ -65,7 +65,7 @@ struct NetworkDetailsView: View {
 
     private func processRow(_ process: NetProcUsage) -> some View {
         HStack(spacing: 6) {
-            Text(process.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
+            Text(process.name).font(Theme.Typo.caption).foregroundStyle(Theme.ink)
                 .lineLimit(1).truncationMode(.middle)
             Spacer()
             rate("arrow.up", process.txBps)

@@ -33,8 +33,11 @@ extension Theme {
         static let quick = Animation.easeInOut(duration: 0.18)
         static let standard = Animation.easeInOut(duration: 0.25)
     }
-    // Settings content is one column this wide at most, so cards and headers align.
+    // A single-column page is at most this wide, so labels stay near their controls;
+    // pages laid out in two columns may use the wider measure.
     static let contentMaxWidth: CGFloat = 760
+    static let wideContentMaxWidth: CGFloat = 1080
+    static let columnMinWidth: CGFloat = 340
 
     // Status colors, reserved for state (never a chart series); always paired with
     // an icon or a label, never color alone.
@@ -61,6 +64,34 @@ struct PageHeader: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// Two columns side by side when each can be at least `minWidth` wide, otherwise
+// one column in reading order (left, then right). The fixed ideal width makes
+// the choice depend on the space available, not on how long the texts are.
+struct Columns<Left: View, Right: View>: View {
+    var minWidth: CGFloat = Theme.columnMinWidth
+    let left: Left
+    let right: Right
+
+    init(minWidth: CGFloat = Theme.columnMinWidth, @ViewBuilder left: () -> Left, @ViewBuilder right: () -> Right) {
+        self.minWidth = minWidth; self.left = left(); self.right = right()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: Theme.Space.l) {
+                column { left }
+                column { right }
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.xl) { left; right }
+        }
+    }
+
+    private func column<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Space.l) { content() }
+            .frame(minWidth: minWidth, idealWidth: minWidth, maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -117,7 +148,9 @@ extension View {
 
 // MARK: - Rows
 
-// Label (and optional detail line) on the left, the control right-aligned.
+// Label (and optional detail) on the left, the control right-aligned. When the
+// label's first line and the control don't fit side by side (a narrow column,
+// a long translation), the control moves under the label instead of clipping.
 struct SettingRow<Control: View>: View {
     let label: String
     var detail: String? = nil
@@ -128,17 +161,28 @@ struct SettingRow<Control: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: Theme.Space.m) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label).font(Theme.Typo.body).foregroundStyle(Theme.ink)
-                if let detail {
-                    Text(detail).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: Theme.Space.m) {
+                labels(title: Text(label).fixedSize())
+                Spacer(minLength: Theme.Space.s)
+                control
             }
-            .layoutPriority(1)
-            Spacer(minLength: Theme.Space.s)
-            control
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
+                labels(title: Text(label).fixedSize(horizontal: false, vertical: true))
+                control
+            }
+        }
+    }
+
+    // The detail never decides the layout: it wraps in whatever width is left.
+    private func labels(title: some View) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            title.font(Theme.Typo.body).foregroundStyle(Theme.ink)
+            if let detail {
+                Text(detail).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(minWidth: 0, idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
@@ -225,7 +269,7 @@ struct Callout<Actions: View>: View {
             }
             .layoutPriority(1)
             Spacer(minLength: Theme.Space.s)
-            actions
+            actions.fixedSize()   // the message wraps; the buttons never get clipped
         }
         .padding(Theme.Space.m)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -243,20 +287,36 @@ extension Callout where Actions == EmptyView {
     }
 }
 
-// A small capsule label, e.g. a version or a state.
+// A small capsule label, e.g. a version or a state; `compact` for dense lists.
 struct Badge: View {
     let text: String
     var icon: String? = nil
     var tint: Color = Theme.accent
+    var compact = false
     var body: some View {
-        HStack(spacing: 4) {
-            if let icon { Image(systemName: icon).font(.system(size: 9, weight: .bold)) }
-            Text(text).font(.system(size: 11, weight: .medium)).monospacedDigit()
+        HStack(spacing: compact ? 3 : 4) {
+            if let icon { Image(systemName: icon).font(.system(size: compact ? 8 : 9, weight: .bold)) }
+            Text(text).font(.system(size: compact ? 9 : 11, weight: compact ? .semibold : .medium)).monospacedDigit()
         }
         .foregroundStyle(tint)
-        .padding(.horizontal, 8).padding(.vertical, 3)
+        .padding(.horizontal, compact ? 5 : 8).padding(.vertical, compact ? 1 : 3)
         .background(tint.opacity(0.14))
         .clipShape(Capsule())
+    }
+}
+
+// What a list or detail area shows when there is nothing in it yet.
+struct EmptyState: View {
+    let icon: String
+    let text: String
+    var body: some View {
+        VStack(spacing: Theme.Space.s) {
+            Image(systemName: icon).font(.system(size: 28, weight: .light)).foregroundStyle(Theme.ink3)
+            Text(text).font(Theme.Typo.secondary).foregroundStyle(Theme.ink3).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Theme.Space.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
