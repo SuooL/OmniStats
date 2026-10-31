@@ -237,7 +237,7 @@ struct DualSparkline: View {
                           kind: kind, color: upColor, scale: .log, showBaseline: false)
             }
             .frame(height: height)
-            .background(Theme.mode == .dark ? Color(hex: 0x0B0E13) : Color(hex: 0xEDF0F4))
+            .background(Theme.well)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.line, lineWidth: 1))
 

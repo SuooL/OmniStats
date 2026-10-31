@@ -52,6 +52,7 @@ enum UISnapshots {
         defer { defaults.removePersistentDomain(forName: suite) }
         let store = ConfigStore(defaults: defaults)
         store.config.showProcesses = false
+        store.config.mode = .curve   // the Fans page's richest state
 
         let mon = Monitor()
         let engine = Engine(monitor: mon, store: store)
@@ -75,7 +76,8 @@ enum UISnapshots {
         let settings = SettingsWindowController(mon: mon, store: store, engine: engine,
                                                 updater: Updater(updater: updaterController.updater),
                                                 battery: battery, charge: charge,
-                                                menuBar: MenuBarManager(store: store, defaults: defaults))
+                                                menuBar: MenuBarManager(store: store, defaults: defaults),
+                                                uninstaller: AppUninstaller())
         battery.setSamplingInterval(60)
         charge.refresh(forceNative: true)
 
@@ -87,7 +89,8 @@ enum UISnapshots {
         guard let window = settings.window else { fatalError("Settings did not open") }
         // Tall enough to show a whole page; review the default size separately.
         let height = Double(ProcessInfo.processInfo.environment["OMNISTATS_SNAPSHOT_HEIGHT"] ?? "") ?? 1100
-        window.setFrame(NSRect(x: 40, y: 40, width: 900, height: height), display: true)
+        let width = Double(ProcessInfo.processInfo.environment["OMNISTATS_SNAPSHOT_WIDTH"] ?? "") ?? 1060
+        window.setFrame(NSRect(x: 40, y: 40, width: width, height: height), display: true)
         drain(1)
 
         var count = 0

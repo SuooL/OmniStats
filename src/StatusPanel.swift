@@ -516,7 +516,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             w.titleVisibility = .hidden
             w.isReleasedWhenClosed = false      // we keep the reference; AppKit must not free it
             w.delegate = self
-            if let savedFrame { w.setFrame(savedFrame, display: false) } else { w.center() }
+            if let savedFrame {
+                w.setFrame(savedFrame, display: false)
+            } else {
+                // Wide enough for two-column pages, but never larger than the screen.
+                let visible = (NSScreen.main ?? w.screen)?.visibleFrame.size ?? NSSize(width: 1060, height: 760)
+                w.setContentSize(NSSize(width: min(1060, visible.width - 60), height: min(760, visible.height - 60)))
+                w.center()
+            }
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)

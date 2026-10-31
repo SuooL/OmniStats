@@ -12,91 +12,89 @@ struct MenuBarPane: View {
     private var cfg: OmniStatsConfig { store.config }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L.t("mb.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text(L.t("mb.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            }
+        VStack(alignment: .leading, spacing: Theme.Space.xl) {
+            PageHeader(title: L.t("mb.title"), subtitle: L.t("mb.subtitle"))
             if !MenuBarLayout.isSupported() {
-                card { alert(L.t("mb.unsupported"), .orange) }
+                Callout(.warning, message: L.t("mb.unsupported"))
             } else {
-                card {
-                    toggleRow(L.t("mb.enable"), bind(\.menuBarHiding))
+                Card {
+                    ToggleRow(L.t("mb.enable"), isOn: bind(\.menuBarHiding))
                     diagram
-                    note(L.t("mb.howto"))
-                    if cfg.menuBarHiding && manager.misordered { alert(L.t("mb.misordered"), .orange) }
+                    Note(L.t("mb.howto"))
+                    if cfg.menuBarHiding && manager.misordered { Callout(.warning, message: L.t("mb.misordered")) }
                 }
                 if cfg.menuBarHiding { optionsCard }
             }
             if ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 {
-                card {
-                    HStack(alignment: .top, spacing: 10) {
-                        note(L.t("mb.systemNote"))
-                        Spacer()
-                        Button(L.t("mb.openSettings")) {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension") {
-                                NSWorkspace.shared.open(url)
-                            }
+                Callout(.info, message: L.t("mb.systemNote")) {
+                    Button(L.t("mb.openSettings")) {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension") {
+                            NSWorkspace.shared.open(url)
                         }
-                        .buttonStyle(.bordered).controlSize(.small)
                     }
+                    .secondaryButton()
                 }
             }
-            Spacer(minLength: 0)
         }
         .onDisappear { stopRecording() }
     }
 
     private var optionsCard: some View {
-        card {
-            toggleRow(L.t("mb.alwaysHidden"), bind(\.menuBarAlwaysHidden))
-            note(L.t("mb.alwaysHiddenHelp"))
-            Divider().overlay(Theme.line)
-            HStack {
-                Text(L.t("mb.autoHide")).font(.system(size: 13)).foregroundStyle(Theme.ink)
-                Spacer()
+        Card(L.t("mb.options"), icon: "slider.horizontal.3") {
+            ToggleRow(L.t("mb.alwaysHidden"), detail: L.t("mb.alwaysHiddenHelp"), isOn: bind(\.menuBarAlwaysHidden))
+            RowDivider()
+            SettingRow(L.t("mb.autoHide")) {
                 Picker("", selection: bind(\.menuBarAutoHide)) {
                     ForEach(OmniStatsConfig.menuBarAutoHideChoices, id: \.self) { seconds in
                         Text(seconds == 0 ? L.t("mb.never") : seconds == 60 ? L.t("mb.minute") : L.f("mb.seconds", seconds)).tag(seconds)
                     }
                 }
-                .labelsHidden().frame(width: 140)
+                .labelsHidden().fixedSize()
             }
-            Divider().overlay(Theme.line)
-            HStack(spacing: 10) {
-                Text(L.t("mb.shortcut")).font(.system(size: 13)).foregroundStyle(Theme.ink)
-                Spacer()
-                Button(recording ? L.t("mb.recording") : cfg.menuBarHotKey?.display ?? L.t("mb.record")) {
-                    recording ? stopRecording() : startRecording()
-                }
-                .buttonStyle(.bordered).controlSize(.small).tint(recording ? Theme.accent : nil)
-                if cfg.menuBarHotKey != nil {
-                    Button(L.t("mb.clear")) { store.config.menuBarHotKey = nil }
-                        .buttonStyle(.borderless).controlSize(.small)
+            RowDivider()
+            SettingRow(L.t("mb.shortcut")) {
+                HStack(spacing: Theme.Space.s) {
+                    if cfg.menuBarHotKey != nil && !recording {
+                        Button(L.t("mb.clear")) { store.config.menuBarHotKey = nil }
+                            .buttonStyle(.borderless).controlSize(.small)
+                    }
+                    Button(recording ? L.t("mb.recording") : cfg.menuBarHotKey?.display ?? L.t("mb.record")) {
+                        recording ? stopRecording() : startRecording()
+                    }
+                    .buttonStyle(.bordered).controlSize(.small).tint(recording ? Theme.accent : nil)
                 }
             }
-            if invalidShortcut { note(L.t("mb.shortcutHint")) }
-            if manager.hotKeyFailed { alert(L.t("mb.shortcutTaken"), .orange) }
+            if invalidShortcut { Note(L.t("mb.shortcutHint")) }
+            if manager.hotKeyFailed { Callout(.warning, message: L.t("mb.shortcutTaken")) }
         }
     }
 
-    // [ hidden icons ] | [ visible icons ] ‹ [ OmniStats ]
+    // An illustration, not the real icons: [ hidden ] | [ shown ] ‹ [ OmniStats ]
     private var diagram: some View {
-        HStack(spacing: 6) {
-            icons(3).opacity(0.35)
-            Rectangle().fill(Theme.ink2).frame(width: 1.5, height: 14)
-            icons(2)
-            Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent)
-            Image(systemName: "thermometer.medium").font(.system(size: 11)).foregroundStyle(Theme.ink2)
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Theme.line.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 6))
-    }
-    private func icons(_ count: Int) -> some View {
-        HStack(spacing: 5) {
-            ForEach(0..<count, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 3).fill(Theme.ink2).frame(width: 12, height: 12)
+        HStack(alignment: .top, spacing: Theme.Space.m) {
+            Badge(text: L.t("mb.example"), tint: Theme.ink3)
+            HStack(alignment: .top, spacing: Theme.Space.s) {
+                group(["speaker.wave.2.fill", "wifi", "moon.fill"], caption: L.t("mb.hiddenLabel")).opacity(0.4)
+                Rectangle().fill(Theme.ink2).frame(width: 1.5, height: 16)
+                group(["battery.75percent", "magnifyingglass"], caption: L.t("mb.shownLabel"))
+                Image(systemName: "chevron.left").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.accent)
+                    .frame(height: 16)
+                Image(systemName: "thermometer.medium").font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                    .frame(height: 16)
             }
+            .padding(.horizontal, Theme.Space.m).padding(.vertical, Theme.Space.s)
+            .background(Theme.well, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L.t("mb.howto"))
+    }
+    private func group(_ symbols: [String], caption: String) -> some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 7) {
+                ForEach(symbols, id: \.self) { Image(systemName: $0).font(.system(size: 12)).foregroundStyle(Theme.ink) }
+            }
+            .frame(height: 16)
+            Text(caption).font(Theme.Typo.micro).foregroundStyle(Theme.ink3)
         }
     }
 
@@ -124,21 +122,5 @@ struct MenuBarPane: View {
 
     private func bind<T>(_ keyPath: WritableKeyPath<OmniStatsConfig, T>) -> Binding<T> {
         Binding(get: { store.config[keyPath: keyPath] }, set: { store.config[keyPath: keyPath] = $0 })
-    }
-    private func toggleRow(_ label: String, _ binding: Binding<Bool>) -> some View {
-        Toggle(isOn: binding) { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink) }.toggleStyle(.themed)
-    }
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-    }
-    private func alert(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
-    }
-    @ViewBuilder private func card<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 12) { content() }
-            .padding(16).frame(maxWidth: 560, alignment: .leading)
-            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-            .shadow(color: Theme.cardShadow, radius: 7, y: 2)
     }
 }

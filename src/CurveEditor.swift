@@ -43,7 +43,7 @@ struct CurveEditor: View {
                 .contentShape(Rectangle())
             }
             .frame(height: height)
-            .background(Theme.mode == .dark ? Color(hex: 0x0B0E13) : Color(hex: 0xEDF0F4))
+            .background(Theme.well)
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
 
