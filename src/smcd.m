@@ -162,8 +162,9 @@ typedef enum { BatteryBackendNone = 0, BatteryBackendCHTE, BatteryBackendCH0BC }
 typedef struct { int enabled, limit, sailing, sleepStop, stayAwake, heatProtect, heatLimit, ledMode, autoDischarge; } BatteryConfig;
 // temperature is in 0.01 °C, 0 when unknown. plugged is the physical adapter
 // (SMC AC-W), which stays true while we cut the adapter; external is what macOS
-// reports and reads false then.
-typedef struct { int valid, percent, external, charging, temperature, plugged; } BatteryReading;
+// reports and reads false then. fullyCharged is macOS's FullyCharged: the charger
+// finished, as opposed to charging being paused.
+typedef struct { int valid, percent, external, charging, temperature, plugged, fullyCharged; } BatteryReading;
 
 static const BatteryConfig kBatteryDefaults = {0, 80, 5, 0, 0, 0, 40, 0, 0};
 static BatteryConfig gBattery = {0, 80, 5, 0, 0, 0, 40, 0, 0};
@@ -236,20 +237,21 @@ static int calibrationCharging(int phase) {
     return phase == CalCharge1 || phase == CalHold1 || phase == CalCharge2 || phase == CalHold2;
 }
 static int calibrationDischarging(int phase) { return phase == CalDischarge || phase == CalToLimit; }
-// Full for calibration: 100 %, or 99 % once the charger has finished (macOS can
-// sit at 99 % through a long top-off). A heat pause is not a finished charge.
-static int calibrationFull(BatteryReading r, int heatHeld) {
-    return r.percent >= 100 || (r.percent >= 99 && r.external && !r.charging && !heatHeld);
+// Full for calibration: the charger has finished. The percentage alone misleads:
+// an M5 Pro read 100 % through 20 more minutes of charging, and a charge paused by
+// our own limit or heat protection reads "not charging" at 99-100 % too.
+static int calibrationFull(BatteryReading r) {
+    return r.fullyCharged && r.percent >= 99;
 }
 // Calibration: full -> hold 1 h -> 15 % -> full -> hold 1 h -> back to the limit.
 // Returns the next phase, or -1 to stop early (unplugged, or a phase overran).
-// The holds keep charging allowed, so a battery that is still topping off finishes there.
-static int calibrationNext(int phase, BatteryReading r, double elapsed, BatteryConfig c, int heatHeld) {
+// A charge still at 99 % after 6 h moves on; the holds keep charging allowed.
+static int calibrationNext(int phase, BatteryReading r, double elapsed, BatteryConfig c) {
     if(phase == CalIdle || !r.valid) return phase;
     if(!r.plugged) return -1;
     switch(phase) {
     case CalCharge1: case CalCharge2:
-        if(calibrationFull(r, heatHeld)) return phase + 1;
+        if(calibrationFull(r)) return phase + 1;
         if(elapsed > CAL_CHARGE_MAX_SEC) return r.percent >= 99 ? phase + 1 : -1;
         return phase;
     case CalHold1: return elapsed >= CAL_HOLD_SEC ? CalDischarge : phase;
@@ -354,6 +356,7 @@ static int readBatteryRegistry(BatteryReading *out) {
     CFTypeRef external = IORegistryEntryCreateCFProperty(service, CFSTR("ExternalConnected"), kCFAllocatorDefault, 0);
     CFTypeRef charging = IORegistryEntryCreateCFProperty(service, CFSTR("IsCharging"), kCFAllocatorDefault, 0);
     CFTypeRef temperature = IORegistryEntryCreateCFProperty(service, CFSTR("Temperature"), kCFAllocatorDefault, 0);
+    CFTypeRef fullyCharged = IORegistryEntryCreateCFProperty(service, CFSTR("FullyCharged"), kCFAllocatorDefault, 0);
     IOObjectRelease(service);
     int value = 0, full = 0, centiDegrees = 0;
     if(current && CFGetTypeID(current) == CFNumberGetTypeID() && CFNumberGetValue((CFNumberRef)current, kCFNumberIntType, &value)
@@ -363,6 +366,8 @@ static int readBatteryRegistry(BatteryReading *out) {
         out->percent = value * 100 / full > 100 ? 100 : value * 100 / full;
         out->external = CFBooleanGetValue((CFBooleanRef)external);
         out->charging = charging && CFGetTypeID(charging) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)charging);
+        out->fullyCharged = fullyCharged && CFGetTypeID(fullyCharged) == CFBooleanGetTypeID()
+            && CFBooleanGetValue((CFBooleanRef)fullyCharged);
         if(temperature && CFGetTypeID(temperature) == CFNumberGetTypeID()
            && CFNumberGetValue((CFNumberRef)temperature, kCFNumberIntType, &centiDegrees)
            && centiDegrees > -2000 && centiDegrees < 10000) out->temperature = centiDegrees;
@@ -372,6 +377,7 @@ static int readBatteryRegistry(BatteryReading *out) {
     if(external) CFRelease(external);
     if(charging) CFRelease(charging);
     if(temperature) CFRelease(temperature);
+    if(fullyCharged) CFRelease(fullyCharged);
     return out->valid ? 0 : -1;
 }
 // Another charge manager writes the same keys; stand back while one runs.
@@ -595,7 +601,7 @@ static void batteryTick(void) {
     if(gConflict[0]) { restoreAdapter(); batteryApplyEnergyMode(0); return; }
     double now = wallClock();
     if(gCalPhase != CalIdle) {
-        int next = calibrationNext(gCalPhase, gLastReading, now - gCalPhaseStart, gBattery, gHeatHeld);
+        int next = calibrationNext(gCalPhase, gLastReading, now - gCalPhaseStart, gBattery);
         if(next != gCalPhase) setCalibrationPhase(next < 0 ? CalIdle : next, next < 0 ? 2 : next == CalIdle ? 1 : 0);
     }
     if(gDischargeTarget && gLastReading.valid
