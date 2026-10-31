@@ -408,6 +408,48 @@ extension BatteryHistoryBucket {
     }
 }
 
+// Where the power went, for the strip under the charge chart.
+enum BatteryPowerState: Equatable {
+    case charging, pluggedIdle, onBattery
+    init(_ flags: BatteryHistoryRecord.Flags) {
+        self = !flags.contains(.external) ? .onBattery : flags.contains(.charging) ? .charging : .pluggedIdle
+    }
+}
+
+struct BatteryStateSegment: Equatable {
+    var state: BatteryPowerState
+    var start: Date, end: Date
+}
+
+extension BatteryStateSegment {
+    // Consecutive samples in one state merge into a segment that runs until the
+    // next sample; a gap longer than `gap` ends it there, so gaps stay empty.
+    static func segments(_ records: [BatteryHistoryRecord], from: TimeInterval, to: TimeInterval,
+                         gap: TimeInterval = BatteryHistoryRecord.gap) -> [BatteryStateSegment] {
+        guard to > from else { return [] }
+        var result: [BatteryStateSegment] = []
+        let first = Swift.max(0, records.firstIndex(atOrAfter: from) - 1)
+        guard first < records.count else { return [] }
+        for i in first..<records.count {
+            let record = records[i], t = TimeInterval(record.time)
+            if t > to { break }
+            let next = i + 1 < records.count ? TimeInterval(records[i + 1].time) : t
+            // The last sample, or one before a gap, covers only its own minute.
+            let end = Swift.min(to, next - t <= gap && next > t ? next : t + BatteryHistoryRecord.cadence)
+            let start = Swift.max(from, t)
+            guard end > start else { continue }
+            let state = BatteryPowerState(record.flags)
+            if var last = result.last, last.state == state, abs(last.end.timeIntervalSince1970 - start) < 1 {
+                last.end = Date(timeIntervalSince1970: end); result[result.count - 1] = last
+            } else {
+                result.append(BatteryStateSegment(state: state, start: Date(timeIntervalSince1970: start),
+                                                  end: Date(timeIntervalSince1970: end)))
+            }
+        }
+        return result
+    }
+}
+
 // Time and energy over [from, to] from consecutive samples no further apart than
 // `gap`. Each interval takes its first sample's state; power is the mean of its
 // two ends. Gaps count for nothing. Durations are seconds.
@@ -573,6 +615,12 @@ final class BatteryHistory: ObservableObject {
         queue.sync {
             BatteryHistoryBucket.series(store.records, field, from: from.timeIntervalSince1970,
                                         to: to.timeIntervalSince1970, maxPoints: maxPoints)
+        }
+    }
+
+    func states(from: Date, to: Date) -> [BatteryStateSegment] {
+        queue.sync {
+            BatteryStateSegment.segments(store.records, from: from.timeIntervalSince1970, to: to.timeIntervalSince1970)
         }
     }
 

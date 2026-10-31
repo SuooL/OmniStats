@@ -708,11 +708,55 @@ struct LogicTests {
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
         checkBatteryHistory()
+        checkBatteryCharts()
         print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, battery history storage/downsampling/stats/estimates, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding, uninstaller scanning")
     }
 
     // Records, files, queries and the recorder, all inside a temporary folder:
     // the real Application Support folder is never touched.
+    // History chart helpers: round ticks, clock-aligned time ticks, state strips
+    // that keep gaps empty, and the crosshair's sample lookup.
+    @MainActor static func checkBatteryCharts() {
+        check(AxisTicks.ticks(0, 100, count: 3) == [0, 50, 100], "Charge ticks are 0/50/100")
+        check(AxisTicks.ticks(-9.4, 27.3) == [-20, 0, 20, 40], "Power ticks are round and include zero")
+        let fractional = AxisTicks.ticks(97.62, 98.11, count: 3)
+        check(fractional.first! <= 97.62 && fractional.last! >= 98.11
+              && fractional.allSatisfy { abs(($0 * 10).rounded() - $0 * 10) < 1e-6 }, "Fractional ticks land on one decimal, never 97.75")
+        check(AxisTicks.ticks(5, 5).count >= 2, "A flat series still gets a range")
+        check(AxisTicks.ticks(.nan, 1).isEmpty, "Non-finite input gives no ticks")
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let base = Date(timeIntervalSince1970: 1_793_400_000)   // 2026-10-30 22:40 UTC
+        let half = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(7200), step: 1800, calendar: utc)
+        check(half.count == 4 && half.allSatisfy { Int($0.timeIntervalSince1970) % 1800 == 0 }, "2 h ticks fall on the half hour")
+        let days = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(7 * 86400), step: 86400, calendar: utc)
+        check(days.count == 7 && days.allSatisfy { Int($0.timeIntervalSince1970) % 86400 == 0 }, "Day ticks fall on midnight")
+        let five = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(30 * 86400), step: 5 * 86400, calendar: utc)
+        let fiveDays = five.map { utc.component(.day, from: $0) }
+        check(fiveDays.allSatisfy { $0 % 5 == 1 && $0 <= 26 } && fiveDays.contains(26), "5-day ticks fall on days 1, 6 … 26 of each month")
+
+        func record(_ t: UInt32, _ flags: BatteryHistoryRecord.Flags) -> BatteryHistoryRecord {
+            var r = BatteryHistoryRecord(time: t, percent: 80); r.flags = flags; return r
+        }
+        let t0: UInt32 = 1_000_000
+        let records = [record(t0, [.external]), record(t0 + 60, [.external]), record(t0 + 120, [.external, .charging]),
+                       record(t0 + 180, [.external, .charging]), record(t0 + 600, []), record(t0 + 660, [])]
+        let segments = BatteryStateSegment.segments(records, from: TimeInterval(t0), to: TimeInterval(t0 + 3600))
+        check(segments.map(\.state) == [.pluggedIdle, .charging, .onBattery], "States merge per run")
+        check(segments[0].end.timeIntervalSince1970 == TimeInterval(t0 + 120), "A segment runs until the next state")
+        check(segments[1].end.timeIntervalSince1970 == TimeInterval(t0 + 240), "A gap ends a segment after its last minute")
+        check(segments[2].start.timeIntervalSince1970 == TimeInterval(t0 + 600), "The gap stays empty")
+        check(BatteryStateSegment.segments(records, from: TimeInterval(t0 + 5000), to: TimeInterval(t0 + 6000)).isEmpty,
+              "No samples in range, no segments")
+
+        let bucket = { (t: Double, v: Double) in
+            BatteryHistoryBucket(start: Date(timeIntervalSince1970: t), end: Date(timeIntervalSince1970: t), low: v, high: v, mean: v, count: 1)
+        }
+        let series = ChartSeries(id: "x", name: "x", color: .clear, runs: [[bucket(0, 10), bucket(60, 20)], [bucket(600, 30)]])
+        check(series.value(at: Date(timeIntervalSince1970: 50), slot: 60) == 20, "The crosshair reads the nearest sample")
+        check(series.value(at: Date(timeIntervalSince1970: 300), slot: 60) == nil, "The crosshair reads nothing inside a gap")
+        check(series.value(at: Date(timeIntervalSince1970: 620), slot: 60) == 30 && series.latest?.mean == 30, "Latest is the newest bucket")
+    }
+
     @MainActor static func checkBatteryHistory() {
         typealias Record = BatteryHistoryRecord
         let files = FileManager.default

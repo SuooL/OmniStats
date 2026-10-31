@@ -43,6 +43,7 @@ struct SettingsView: View {
     let charge: ChargeController
     let menuBar: MenuBarManager?
     var uninstaller: AppUninstaller?
+    var history: BatteryHistory?
     @ObservedObject var state: SettingsState
     @Namespace private var selection
 
@@ -66,7 +67,9 @@ struct SettingsView: View {
                         page.frame(maxHeight: .infinity, alignment: .top)
                     }
                 }
-                .id(state.section)
+                // Language, theme and accent are global; rebuilding the page on a
+                // change reaches subviews whose own inputs didn't change.
+                .id("\(state.section.rawValue)|\(store.config.language.rawValue)|\(Theme.mode.rawValue)|\(store.config.accent.rawValue)")
                 .transition(.opacity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -126,7 +129,7 @@ struct SettingsView: View {
     @ViewBuilder private var content: some View {
         switch state.section {
         case .fans:    FansPane(mon: mon, store: store, engine: engine)
-        case .battery: BatteryPane(sampler: battery, store: store, mon: mon, charge: charge)
+        case .battery: BatteryPane(sampler: battery, store: store, mon: mon, charge: charge, history: history)
         case .menuBar: if let menuBar { MenuBarPane(store: store, manager: menuBar) }
         case .apps:    if let uninstaller { AppsPane(model: uninstaller) }
         case .general: GeneralPane(store: store, hasBattery: battery.isPresent)
@@ -306,13 +309,14 @@ struct HelperCallout: View {
     @ObservedObject var mon: Monitor
     let title: String
     let message: String
+    var action = "f.enableShort"
 
     var body: some View {
         Callout(.action, title: title, message: message) {
             Button { mon.enableControl() } label: {
                 HStack(spacing: 6) {
                     if mon.busy { ProgressView().controlSize(.small) }
-                    Text(mon.busy ? L.t("m.enabling") : L.t(mon.helperNeedsUpdate ? "control.updateShort" : "f.enableShort"))
+                    Text(mon.busy ? L.t("m.enabling") : L.t(mon.helperNeedsUpdate ? "control.updateShort" : action))
                 }
             }
             .primaryButton().disabled(mon.busy)

@@ -48,7 +48,7 @@ Macs whose firmware exposes writable fan keys (see [How fan control works](#how-
 - 🚀 Optional launch at login (General → Startup)
 - 🗑 Uninstall apps together with their settings, caches, launch agents, daemons and helpers (all moved to the Trash)
 - 🫥 Hide menu bar icons you rarely use behind ‹, Bartender-style, with no permissions (macOS 13–26)
-- 🔋 Battery: charge, hardware charge, health (maximum capacity, cycles), and live power flow without administrator access, plus an optional charge limit with sailing mode (through the helper)
+- 🔋 Battery: charge, health, live power flow and 30 days of history charts (charge, power, current, temperature) without administrator access, plus an optional charge limit with sailing mode (through the helper)
 - ⬆️ Built-in update check with optional one-click self-update
 - 🪶 Tiny native SwiftUI app — no Electron, no background bloat
 
@@ -160,6 +160,14 @@ closed.
   takes most of a day, so the step to 15 % gets up to 24 h, and Low Power Mode
   is switched to Automatic during it and restored afterwards. These are
   deliberately not reachable from links or schedules.
+- **History** records the battery once a minute, when macOS's battery gauge
+  refreshes (no polling), and keeps 30 days in
+  `~/Library/Application Support/OmniStats` (about 1.2 MB, never uploaded). The
+  Battery pane charts charge, power, current and temperature over 2 hours to
+  30 days with one crosshair across all four, estimates the time to your limit
+  (macOS only times a charge to 100 %) or to empty, totals today's energy and
+  time held at the limit, and plots capacity once a day. Gaps are times the
+  Mac slept or OmniStats wasn't running.
 
 ## Uninstalling apps
 

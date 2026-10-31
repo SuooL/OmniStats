@@ -355,3 +355,59 @@ struct ConfirmButton: View {
         }
     }
 }
+
+// MARK: - Figures
+
+// A labelled figure: label, value and an optional detail line. Values use
+// proportional figures (tabular digits only where numbers line up in columns).
+struct StatTile: View {
+    let label: String
+    let value: String
+    var detail: String? = nil
+    var icon: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                if let icon {
+                    Image(systemName: icon).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.accent).frame(width: 13)
+                }
+                Text(label).font(Theme.Typo.caption).foregroundStyle(Theme.ink3).lineLimit(1)
+            }
+            Text(value).font(.system(size: 18, weight: .semibold, design: .rounded)).foregroundStyle(Theme.ink)
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(detail ?? " ").font(Theme.Typo.micro).foregroundStyle(Theme.ink3).lineLimit(1)
+        }
+        .padding(.horizontal, Theme.Space.m).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.well.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+// A ratio against a whole. The track is a light step of the fill's own color;
+// markers (a limit, a resume point) are short ink ticks.
+struct Meter: View {
+    let fraction: Double
+    var tint: Color = Theme.accent
+    var markers: [Double] = []
+    var height: CGFloat = 6
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(tint.opacity(0.18))
+                Capsule().fill(tint).frame(width: width * min(1, max(0, fraction)))
+                ForEach(markers.indices, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 1).fill(Theme.ink.opacity(0.8))
+                        .frame(width: 2, height: height + 6)
+                        .offset(x: width * min(1, max(0, markers[i])) - 1)
+                }
+            }
+            .frame(height: height + 6)
+        }
+        .frame(height: height + 6)
+        .animation(Theme.Motion.standard, value: fraction)
+    }
+}
