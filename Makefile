@@ -34,7 +34,7 @@ SPARKLE_URL := https://github.com/sparkle-project/Sparkle/releases/download/$(SP
 SPARKLE_DIR := $(BUILD)/sparkle
 SPARKLE_FW  := $(SPARKLE_DIR)/Sparkle.framework
 
-.PHONY: all app helper bundle dmg clean install uninstall run test test-logic test-runtime icon sparkle
+.PHONY: all app helper bundle dmg clean install uninstall run test test-logic test-runtime ui-snapshots icon sparkle
 
 all: bundle helper
 
@@ -153,6 +153,23 @@ $(BUILD)/runtime-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) te
 
 test-runtime: $(BUILD)/runtime-tests $(BUILD)/$(NETTOP)
 	@$(BUILD)/runtime-tests
+
+# Every Settings page per language and theme, for UI review; requires a logged-in desktop.
+# Its own identifier (never the app's preferences), with the app's version shown in About.
+$(BUILD)/ui-snapshots-Info.plist: packaging/Info.plist | $(BUILD)
+	@rm -f $@ && plutil -create xml1 $@
+	@plutil -insert CFBundleIdentifier -string io.github.suool.omnistats.snapshots $@
+	@plutil -insert CFBundleShortVersionString -string "$$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' $<)" $@
+
+$(BUILD)/ui-snapshots-tool: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/UISnapshots.swift $(BUILD)/hardware_stubs.o $(BUILD)/ui-snapshots-Info.plist $(SRC)/bridge.h $(SPARKLE_FW) | $(BUILD)
+	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/UISnapshots.swift \
+	  $(BUILD)/hardware_stubs.o -import-objc-header $(SRC)/bridge.h \
+	  -F $(SPARKLE_DIR) -framework Sparkle $(SWIFT_FRAMEWORKS) \
+	  -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker $(BUILD)/ui-snapshots-Info.plist \
+	  -Xlinker -rpath -Xlinker $(abspath $(SPARKLE_DIR)) -o $@
+
+ui-snapshots: $(BUILD)/ui-snapshots-tool
+	@OMNISTATS_SNAPSHOT_DIR=$(BUILD)/ui-snapshots $(BUILD)/ui-snapshots-tool
 
 $(BUILD)/logic-tests: $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift tests/test_bridge.h tests/hardware_stubs.h $(BUILD)/hardware_stubs.o $(SPARKLE_FW) | $(BUILD)
 	$(SWIFTC) -O $(SWIFT_TARGET) -parse-as-library $(filter-out $(SRC)/OmniStatsApp.swift,$(SWIFT_SRCS)) tests/LogicTests.swift \

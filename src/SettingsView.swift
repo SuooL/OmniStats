@@ -9,7 +9,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .fans:    return "fanblades.fill"
         case .battery: return "battery.100percent.bolt"
         case .menuBar: return "menubar.rectangle"
-        case .apps:    return "trash"
+        case .apps:    return "trash.fill"
         case .general: return "gearshape.fill"
         case .about:   return "info.circle.fill"
         }
@@ -34,6 +34,7 @@ struct SettingsView: View {
     let menuBar: MenuBarManager?
     var uninstaller: AppUninstaller?
     @ObservedObject var state: SettingsState
+    @Namespace private var selection
 
     // Desktop Macs have no battery pane.
     var sections: [SettingsSection] {
@@ -46,8 +47,16 @@ struct SettingsView: View {
         HStack(spacing: 0) {
             sidebar
             Divider().overlay(Theme.line)
-            ScrollView {
-                content.padding(26).frame(maxWidth: .infinity, alignment: .leading)
+            // Each page starts at the top and fades in; one column, one width.
+            ZStack {
+                ScrollView {
+                    content
+                        .frame(maxWidth: Theme.contentMaxWidth, alignment: .leading)
+                        .padding(Theme.Space.page)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .id(state.section)
+                .transition(.opacity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.surface)
@@ -62,28 +71,37 @@ struct SettingsView: View {
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Image(systemName: "thermometer.sun.fill").foregroundStyle(Theme.accent)
-                Text("OmniStats").font(.system(size: 15, weight: .bold))
+                Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 18, height: 18)
+                Text("OmniStats").font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
             }.padding(.bottom, 16).padding(.horizontal, 6).padding(.top, 8)
 
+            // Row metrics (30 pt rows, 4 pt apart) are what RuntimeTests clicks.
             ForEach(sections) { s in
-                Button { state.section = s } label: {
+                let selected = state.section == s
+                Button { withAnimation(Theme.Motion.standard) { state.section = s } } label: {
                     HStack(spacing: 9) {
                         Image(systemName: s.icon).frame(width: 18)
                         Text(s.title).font(.system(size: 13, weight: .medium))
-                        Spacer()
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
                     }
                     .padding(.vertical, 7).padding(.horizontal, 8)
                     .contentShape(Rectangle())
-                    .background(state.section == s ? Theme.accent.opacity(0.16) : .clear)
-                    .foregroundStyle(state.section == s ? Theme.accent : Theme.ink2)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .foregroundStyle(selected ? Theme.accent : Theme.ink2)
+                    .background {
+                        if selected {
+                            RoundedRectangle(cornerRadius: Theme.Radius.control - 1, style: .continuous)
+                                .fill(Theme.accent.opacity(0.16))
+                                .matchedGeometryEffect(id: "selection", in: selection)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
             }
             Spacer()
         }
-        .padding(12).frame(width: 168)
+        .padding(12).frame(width: 200)
         .background(Theme.bg)
     }
 
@@ -316,98 +334,61 @@ struct GeneralPane: View {
     private var cfg: OmniStatsConfig { store.config }
 
     var body: some View {
-        Group {
-            VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L.t("g.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                    Text(L.t("g.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
-                }
+        VStack(alignment: .leading, spacing: Theme.Space.xl) {
+            PageHeader(title: L.t("g.title"), subtitle: L.t("g.subtitle"))
 
-                cardSection(L.t("g.sectionStartup")) { startupRows }
-
-                // Display, language & colors
-                cardSection(L.t("g.sectionDisplay")) {
-                    row(L.t("g.language")) {
-                        Picker("", selection: bind(\.language)) {
-                            ForEach(AppLanguage.allCases) { l in Text(l.displayName).tag(l) }
-                        }.labelsHidden().frame(width: 160)
-                    }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.theme")) {
-                        Picker("", selection: bind(\.appearance)) {
-                            ForEach(AppearanceMode.allCases) { m in Text(m.title).tag(m) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
-                    }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.tempUnit")) {
-                        Picker("", selection: bind(\.fahrenheit)) {
-                            Text("°C").tag(false); Text("°F").tag(true)
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 96)
-                    }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.accent")) { accentSwatches }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.numberColor")) {
-                        Picker("", selection: bind(\.menuNumberColor)) {
-                            ForEach(MenuNumberColorMode.allCases) { m in Text(m.title).tag(m) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                    }
+            Card(L.t("g.sectionAppearance"), icon: "paintpalette.fill") {
+                SettingRow(L.t("g.theme")) { segmented(\.appearance, AppearanceMode.allCases) { $0.title } }
+                RowDivider()
+                SettingRow(L.t("g.accent")) { accentSwatches }
+                RowDivider()
+                SettingRow(L.t("g.language")) {
+                    Picker("", selection: bind(\.language)) {
+                        ForEach(AppLanguage.allCases) { l in Text(l.displayName).tag(l) }
+                    }.labelsHidden().fixedSize()
                 }
-
-                cardSection(L.t("refresh.title")) {
-                    row(L.t("refresh.mode")) {
-                        Picker("", selection: bind(\.refreshMode)) {
-                            ForEach(RefreshMode.allCases) { mode in Text(mode.title).tag(mode) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 240)
-                    }
-                    Text(L.t("refresh.body")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-                        .fixedSize(horizontal: false, vertical: true)
+                RowDivider()
+                SettingRow(L.t("g.tempUnit")) {
+                    Picker("", selection: bind(\.fahrenheit)) {
+                        Text("°C").tag(false); Text("°F").tag(true)
+                    }.pickerStyle(.segmented).labelsHidden().fixedSize().tint(Theme.accent)
                 }
+            }
 
-                // Charts / visualization
-                cardSection(L.t("g.sectionCharts")) {
-                    row(L.t("g.topWidgetStyle")) {
-                        Picker("", selection: bind(\.topWidgetStyle)) {
-                            ForEach(TopWidgetStyle.allCases) { s in Text(s.title).tag(s) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                    }
-                    if cfg.topWidgetStyle.isChart {
-                        Divider().overlay(Theme.line)
-                        row(L.t("g.topWidgetWindow")) {
-                            Picker("", selection: bind(\.topWidgetWindow)) {
-                                ForEach(ChartWindow.allCases) { w in Text(w.title).tag(w) }
-                            }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                        }
-                    }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.netChartKind")) {
-                        Picker("", selection: bind(\.netChartKind)) {
-                            ForEach(ChartKind.allCases) { k in Text(k.title).tag(k) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 140)
-                    }
+            Card(L.t("g.sectionMenubar"), icon: "menubar.rectangle") {
+                ToggleRow(L.t("g.showTemp"), isOn: bind(\.showTempInMenuBar))
+                RowDivider()
+                ToggleRow(L.t("g.showNetwork"), isOn: bind(\.showNetworkInMenuBar))
+                RowDivider()
+                SettingRow(L.t("g.numberColor")) { segmented(\.menuNumberColor, MenuNumberColorMode.allCases) { $0.title } }
+                RowDivider()
+                ToggleRow(L.t("g.showNetworkPanel"), isOn: bind(\.showNetworkPanel))
+                RowDivider()
+                ToggleRow(L.t("g.showProcesses"), isOn: bind(\.showProcesses))
+                if hasBattery {
+                    RowDivider()
+                    ToggleRow(L.t("g.showBatteryPanel"), isOn: bind(\.showBatteryPanel))
                 }
+                RowDivider()
+                SettingRow(L.t("g.cpuWindow")) { segmented(\.cpuWindow, CPUWindow.allCases) { $0.title } }
+            }
 
-                // Menu bar & panel visibility
-                cardSection(L.t("g.sectionMenubar")) {
-                    toggleRow(L.t("g.showTemp"), bind(\.showTempInMenuBar))
-                    Divider().overlay(Theme.line)
-                    toggleRow(L.t("g.showNetwork"), bind(\.showNetworkInMenuBar))
-                    Divider().overlay(Theme.line)
-                    toggleRow(L.t("g.showNetworkPanel"), bind(\.showNetworkPanel))
-                    Divider().overlay(Theme.line)
-                    toggleRow(L.t("g.showProcesses"), bind(\.showProcesses))
-                    if hasBattery {
-                        Divider().overlay(Theme.line)
-                        toggleRow(L.t("g.showBatteryPanel"), bind(\.showBatteryPanel))
-                    }
-                    Divider().overlay(Theme.line)
-                    row(L.t("g.cpuWindow")) {
-                        Picker("", selection: bind(\.cpuWindow)) {
-                            ForEach(CPUWindow.allCases) { w in Text(w.title).tag(w) }
-                        }.pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                    }
+            Card(L.t("g.sectionCharts"), icon: "chart.xyaxis.line") {
+                SettingRow(L.t("g.topWidgetStyle")) { segmented(\.topWidgetStyle, TopWidgetStyle.allCases) { $0.title } }
+                if cfg.topWidgetStyle.isChart {
+                    RowDivider()
+                    SettingRow(L.t("g.topWidgetWindow")) { segmented(\.topWidgetWindow, ChartWindow.allCases) { $0.title } }
                 }
-                Spacer(minLength: 0)
+                RowDivider()
+                SettingRow(L.t("g.netChartKind")) { segmented(\.netChartKind, ChartKind.allCases) { $0.title } }
+            }
+
+            Card(L.t("g.sectionStartup"), icon: "power") {
+                startupRows
+                RowDivider()
+                SettingRow(L.t("refresh.mode")) { segmented(\.refreshMode, RefreshMode.allCases) { $0.title } }
+                refreshTable
+                Note(L.t("refresh.body"))
             }
         }
         // The user can change the login item in System Settings while we're away.
@@ -421,40 +402,63 @@ struct GeneralPane: View {
     // installed copy, so a stale DMG/Downloads path never ends up as a login item.
     @ViewBuilder private var startupRows: some View {
         let blocked = !loginItem.canRegister && !loginItem.isOn
-        toggleRow(L.t("g.launchAtLogin"), Binding(get: { loginItem.isOn }, set: { loginItem.setEnabled($0) }))
+        ToggleRow(L.t("g.launchAtLogin"), isOn: Binding(get: { loginItem.isOn }, set: { loginItem.setEnabled($0) }))
             .disabled(blocked)
         if blocked {
-            note(L.t("g.loginNeedsApplications"))
+            Note(L.t("g.loginNeedsApplications"))
         } else if loginItem.needsApproval {
-            HStack(spacing: 10) {
-                note(L.t("g.loginApproval"))
-                Spacer()
-                Button(L.t("g.openLoginItems")) { loginItem.openSystemSettings() }
-                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+            Callout(.warning, message: L.t("g.loginApproval")) {
+                Button(L.t("g.openLoginItems")) { loginItem.openSystemSettings() }.secondaryButton()
             }
         }
-        if let error = loginItem.lastError {
-            Text(L.f("g.loginFailed", error)).font(.system(size: 11)).foregroundStyle(.red)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        if let error = loginItem.lastError { Callout(.error, message: L.f("g.loginFailed", error)) }
     }
 
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            .fixedSize(horizontal: false, vertical: true)
+    // The three refresh modes side by side, the one in use highlighted.
+    private var refreshTable: some View {
+        let columns = [L.t("refresh.colSensors"), L.t("refresh.colNetwork"), L.t("refresh.colProcesses")]
+        return VStack(spacing: 2) {
+            HStack(spacing: Theme.Space.s) {
+                Color.clear.frame(width: 88, height: 1)
+                ForEach(columns, id: \.self) { Text($0).frame(maxWidth: .infinity, alignment: .trailing) }
+            }
+            .font(Theme.Typo.caption).foregroundStyle(Theme.ink3).padding(.horizontal, Theme.Space.s)
+            ForEach(RefreshMode.allCases) { mode in
+                let on = mode == cfg.refreshMode
+                let i = mode.intervals
+                HStack(spacing: Theme.Space.s) {
+                    Text(mode.title).frame(width: 88, alignment: .leading)
+                    ForEach(Array([i.sensors, i.network, i.processes].enumerated()), id: \.offset) { _, seconds in
+                        Text(L.f("refresh.seconds", Int(seconds))).frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                .font(on ? Theme.Typo.secondary.weight(.semibold) : Theme.Typo.secondary)
+                .foregroundStyle(on ? Theme.accent : Theme.ink2)
+                .padding(.vertical, 5).padding(.horizontal, Theme.Space.s)
+                .background(on ? Theme.accent.opacity(0.10) : .clear,
+                            in: RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
+                .animation(Theme.Motion.quick, value: on)
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(on ? [.isSelected] : [])
+            }
+        }
+        .monospacedDigit()
     }
 
     private var accentSwatches: some View {
         HStack(spacing: 10) {
             ForEach(AccentPreset.allCases) { a in
-                Button { store.config.accent = a } label: {
-                    Circle().fill(a.swatch).frame(width: 22, height: 22)
-                        .overlay(Circle().stroke(.white, lineWidth: cfg.accent == a ? 2 : 0))
+                let on = cfg.accent == a
+                Button { withAnimation(Theme.Motion.quick) { store.config.accent = a } } label: {
+                    Circle().fill(a.swatch).frame(width: 20, height: 20)
                         .overlay(Circle().stroke(Theme.line, lineWidth: 1))
-                        .shadow(color: a.swatch.opacity(cfg.accent == a ? 0.6 : 0), radius: 4)
+                        .padding(3)
+                        .overlay(Circle().stroke(Theme.ink, lineWidth: on ? 2 : 0))
                 }
                 .buttonStyle(.plain)
                 .help(a.title)
+                .accessibilityLabel(a.title)
+                .accessibilityAddTraits(on ? [.isSelected] : [])
             }
         }
     }
@@ -463,22 +467,13 @@ struct GeneralPane: View {
     private func bind<T>(_ kp: WritableKeyPath<OmniStatsConfig, T>) -> Binding<T> {
         Binding(get: { store.config[keyPath: kp] }, set: { store.config[keyPath: kp] = $0 })
     }
-    private func row<C: View>(_ label: String, @ViewBuilder _ control: () -> C) -> some View {
-        HStack { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink); Spacer(); control() }
-    }
-    private func toggleRow(_ label: String, _ b: Binding<Bool>) -> some View {
-        Toggle(isOn: b) { Text(label).font(.system(size: 13)).foregroundStyle(Theme.ink) }
-            .toggleStyle(.themed)
-    }
-    @ViewBuilder private func cardSection<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink3)
-            VStack(alignment: .leading, spacing: 14) { content() }
-                .padding(16).frame(maxWidth: 520, alignment: .leading)
-                .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-                .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+    // Segments size to their labels, so no language gets clipped.
+    private func segmented<T: Hashable & Identifiable>(_ kp: WritableKeyPath<OmniStatsConfig, T>, _ options: [T],
+                                                       title: @escaping (T) -> String) -> some View {
+        Picker("", selection: bind(kp)) {
+            ForEach(options) { option in Text(title(option)).tag(option) }
         }
+        .pickerStyle(.segmented).labelsHidden().fixedSize().tint(Theme.accent)
     }
 }
 
@@ -489,58 +484,92 @@ struct AboutPane: View {
     @ObservedObject var updater: Updater
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L.t("a.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text(L.f("a.subtitle", updater.currentVersion)).font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            }
-
-            aboutCard {
-                Text(L.t("a.body"))
-                    .font(.system(size: 12)).foregroundStyle(Theme.ink2).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                    Button { updater.openRepo() } label: {
-                        Label(L.t("a.githubRepo"), systemImage: "chevron.left.forwardslash.chevron.right")
-                    }.buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
-                    Text(Repo.url).font(.system(size: 11)).foregroundStyle(Theme.ink3).textSelection(.enabled)
-                }
-            }
-
-            aboutCard {
-                Text(L.t("a.softwareUpdate")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                Toggle(isOn: Binding(get: { updater.automaticallyChecksForUpdates }, set: { updater.automaticallyChecksForUpdates = $0 })) {
-                    Text(L.t("a.autoCheck")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-                }.toggleStyle(.themed)
-                Toggle(isOn: Binding(get: { updater.automaticallyDownloadsUpdates }, set: { updater.automaticallyDownloadsUpdates = $0 })) {
-                    Text(L.t("a.autoDownload")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-                }.toggleStyle(.themed).disabled(!updater.automaticallyChecksForUpdates)
-
+        VStack(alignment: .leading, spacing: Theme.Space.xl) {
+            PageHeader(title: L.t("a.title"), subtitle: L.t("a.subtitle"))
+            hero
+            Card(L.t("a.softwareUpdate"), icon: "arrow.triangle.2.circlepath", accessory: {
                 // Sparkle presents its own found-update / download / install dialogs.
-                HStack(spacing: 10) {
-                    Button { updater.checkForUpdates() } label: { Text(L.t("a.checkNow")) }
-                        .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
-                        .disabled(!updater.canCheckForUpdates)
-                    Text(L.f("a.currentVersion", updater.currentVersion)).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-                }
+                Button(L.t("a.checkNow")) { updater.checkForUpdates() }
+                    .secondaryButton().disabled(!updater.canCheckForUpdates)
+            }) {
+                ToggleRow(L.t("a.autoCheck"), isOn: Binding(get: { updater.automaticallyChecksForUpdates },
+                                                            set: { updater.automaticallyChecksForUpdates = $0 }))
+                RowDivider()
+                ToggleRow(L.t("a.autoDownload"), isOn: Binding(get: { updater.automaticallyDownloadsUpdates },
+                                                               set: { updater.automaticallyDownloadsUpdates = $0 }))
+                    .disabled(!updater.automaticallyChecksForUpdates)
             }
-
-            aboutCard {
-                if mon.helperAvailable {
-                    Button(role: .destructive) { mon.disableControl() } label: {
-                        Label(L.t("a.removeHelper"), systemImage: "trash")
-                    }.buttonStyle(.bordered).controlSize(.small)
-                }
-                Text(L.t("a.license")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-            }
-            Spacer()
+            components
+            Note(L.t("a.license"))
         }
     }
 
-    @ViewBuilder private func aboutCard<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 12) { content() }
-            .padding(16).frame(maxWidth: 560, alignment: .leading)
-            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-            .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+    private var hero: some View {
+        Card {
+            HStack(alignment: .center, spacing: Theme.Space.l) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high)
+                    .frame(width: 64, height: 64).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: Theme.Space.s) {
+                        Text("OmniStats").font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.ink)
+                        Badge(text: L.f("a.versionBadge", updater.currentVersion))
+                    }
+                    Text(L.t("a.body")).font(Theme.Typo.secondary).foregroundStyle(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            RowDivider()
+            HStack(spacing: Theme.Space.s) {
+                link(L.t("a.githubRepo"), "chevron.left.forwardslash.chevron.right", Repo.url)
+                link(L.t("a.releases"), "tag.fill", Repo.releasesURL)
+                link(L.t("a.issues"), "exclamationmark.bubble.fill", Repo.issuesURL)
+                link(L.t("a.licenseLink"), "doc.text.fill", Repo.licenseURL)
+            }
+        }
+    }
+
+    // The helper is shared by fan control and battery management, so its state,
+    // update and removal live here rather than on either page.
+    private var components: some View {
+        Card(L.t("a.components"), icon: "lock.shield.fill") {
+            HStack(alignment: .center, spacing: Theme.Space.m) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: Theme.Space.s) {
+                        Text(L.t("a.helper")).font(Theme.Typo.body).foregroundStyle(Theme.ink)
+                        helperBadge
+                    }
+                    Note(L.t("a.helperDetail"))
+                }
+                .layoutPriority(1)
+                Spacer(minLength: Theme.Space.s)
+                if mon.busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    if !mon.helperAvailable || mon.helperNeedsUpdate {
+                        Button(L.t(mon.helperNeedsUpdate ? "control.updateShort" : "a.helperInstall")) { mon.enableControl() }
+                            .primaryButton()
+                    }
+                    if mon.helperAvailable {
+                        ConfirmButton(title: L.t("a.removeHelper"), icon: "trash", confirmTitle: L.t("a.removeConfirmTitle"),
+                                      message: L.t("a.removeConfirmBody")) { mon.disableControl() }
+                    }
+                }
+            }
+            if let error = mon.controlError { Callout(.error, message: error) }
+        }
+    }
+
+    @ViewBuilder private var helperBadge: some View {
+        if !mon.helperAvailable {
+            Badge(text: L.t("a.helperMissing"), icon: "minus", tint: Theme.ink3)
+        } else if mon.helperNeedsUpdate {
+            Badge(text: L.t("a.helperOutdated"), icon: "arrow.up", tint: Theme.warning)
+        } else {
+            Badge(text: L.t("a.helperInstalled"), icon: "checkmark", tint: Theme.success)
+        }
+    }
+
+    private func link(_ title: String, _ icon: String, _ url: String) -> some View {
+        Button { updater.open(url) } label: { Label(title, systemImage: icon) }.secondaryButton()
     }
 }

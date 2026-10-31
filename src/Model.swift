@@ -3,20 +3,20 @@ import AppKit
 import Combine
 
 // Apply dark/light chrome (window borders, traffic lights, popover edge) to match
-// the chosen theme. No-op when already correct.
+// the chosen theme; .system hands it back to macOS. No-op when already correct.
 func applyAppChrome(_ m: AppearanceMode) {
-    let want: NSAppearance.Name = (m == .dark) ? .darkAqua : .aqua
-    if NSApp.appearance?.name != want { NSApp.appearance = NSAppearance(named: want) }
+    let want: NSAppearance.Name? = m == .system ? nil : m == .dark ? .darkAqua : .aqua
+    if NSApp?.appearance?.name != want { NSApp?.appearance = want.flatMap(NSAppearance.init(named:)) }
 }
 
 // Apply presentation once per configuration change, outside SwiftUI body
 // evaluation. Reading/mutating AppKit appearance from a body can establish
 // observation dependencies that feed back into AppKit/SwiftUI layout.
 func syncPresentation(_ cfg: OmniStatsConfig) {
-    Theme.mode = cfg.appearance
+    applyAppChrome(cfg.appearance)
+    Theme.mode = cfg.appearance.resolved
     Theme.accentPreset = cfg.accent
     L.lang = cfg.language
-    applyAppChrome(cfg.appearance)
 }
 
 // MARK: - Privileged helper install (single native admin prompt, no Terminal)

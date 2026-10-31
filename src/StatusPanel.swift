@@ -218,8 +218,8 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         let scale = statusItem.button?.window?.screen?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor ?? 2
         guard content != lastLabelContent || scale != lastLabelScale
-                || cfg.appearance != lastLabelAppearance else { return }
-        let renderer = ImageRenderer(content: content.environment(\.colorScheme, cfg.appearance.colorScheme))
+                || Theme.mode != lastLabelAppearance else { return }
+        let renderer = ImageRenderer(content: content.environment(\.colorScheme, Theme.mode.colorScheme))
         renderer.scale = scale
         guard let img = renderer.nsImage else { return }
         img.isTemplate = mono   // mono → adaptive template (legible on any menu-bar tint)
@@ -229,7 +229,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
         statusItem.button?.setAccessibilityLabel(description)
         lastLabelContent = content
         lastLabelScale = scale
-        lastLabelAppearance = cfg.appearance
+        lastLabelAppearance = Theme.mode   // resolved, so "follow system" re-renders on a switch
     }
 
     // MARK: panel lifecycle

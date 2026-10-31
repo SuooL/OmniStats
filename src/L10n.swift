@@ -56,7 +56,7 @@ enum L {
         case .en, .system: return s.en
         }
     }
-    /// Formatted variant, e.g. L.f("a.currentVersion", "1.0.0").
+    /// Formatted variant, e.g. L.f("a.versionBadge", "1.0.0").
     static func f(_ key: String, _ args: CVarArg...) -> String {
         String(format: t(key), arguments: args)
     }
@@ -66,12 +66,15 @@ enum L {
         "network.showDetails": S(zhHans: "展开网络详情", en: "Show network details", zhHant: "展開網路詳細資訊", ja: "ネットワークの詳細を表示"),
         "network.hideDetails": S(zhHans: "收起网络详情", en: "Hide network details", zhHant: "收合網路詳細資訊", ja: "ネットワークの詳細を閉じる"),
         "network.lastHour": S(zhHans: "最近 1 小时", en: "Last hour", zhHant: "最近 1 小時", ja: "過去1時間"),
-        "refresh.title": S(zhHans: "采样与能耗", en: "Sampling & energy", zhHant: "取樣與耗能", ja: "サンプリングと省電力"),
         "refresh.mode": S(zhHans: "后台刷新", en: "Background refresh", zhHant: "背景重新整理", ja: "バックグラウンド更新"),
         "refresh.responsive": S(zhHans: "快速", en: "Fast", zhHant: "快速", ja: "高速"),
         "refresh.balanced": S(zhHans: "默认", en: "Default", zhHant: "預設", ja: "標準"),
         "refresh.economical": S(zhHans: "省电", en: "Eco", zhHant: "省電", ja: "省電力"),
-        "refresh.body": S(zhHans: "后台温度 / 网络 / 进程间隔：快速 3 / 1 / 5 秒，默认 10 / 3 / 10 秒，省电 30 / 10 / 30 秒。打开面板使用默认频率；后台低电量模式使用省电。曲线保护独立采样，历史显示不会加速。", en: "Background temperature / network / process intervals: Fast 3 / 1 / 5s, Default 10 / 3 / 10s, Eco 30 / 10 / 30s. Open panels use Default; background Low Power Mode uses Eco. Curve safety samples independently without speeding up history updates.", zhHant: "背景溫度 / 網路 / 程序間隔：快速 3 / 1 / 5 秒，預設 10 / 3 / 10 秒，省電 30 / 10 / 30 秒。開啟面板使用預設頻率；背景低耗電模式使用省電。曲線保護獨立取樣，歷史顯示不會加速。", ja: "バックグラウンドの温度 / 通信 / プロセス間隔：高速 3 / 1 / 5秒、標準 10 / 3 / 10秒、省電力 30 / 10 / 30秒。パネル表示中は標準、バックグラウンドの低電力モードは省電力を使用します。カーブ保護は表示更新とは独立して測定します。"),
+        "refresh.colSensors": S(zhHans: "温度", en: "Temperature", zhHant: "溫度", ja: "温度"),
+        "refresh.colNetwork": S(zhHans: "网络", en: "Network", zhHant: "網路", ja: "ネットワーク"),
+        "refresh.colProcesses": S(zhHans: "进程", en: "Processes", zhHant: "行程", ja: "プロセス"),
+        "refresh.seconds": S(zhHans: "%d 秒", en: "%d s", zhHant: "%d 秒", ja: "%d 秒"),
+        "refresh.body": S(zhHans: "打开面板或设置时使用默认频率；macOS 低电量模式下，后台自动改用省电。风扇曲线控制另有独立的 2 秒采样，不受此设置影响。", en: "With the panel or Settings open, Default is used; in macOS Low Power Mode the background uses Eco. Fan-curve control reads every 2 s on its own, whatever this is set to.", zhHant: "打開面板或設定時使用預設頻率；macOS 低耗電模式下，背景自動改用省電。風扇曲線控制另有獨立的 2 秒取樣，不受此設定影響。", ja: "パネルや設定を開いている間は標準を使い、macOS の低電力モードではバックグラウンドが省電力になります。ファンカーブ制御はこの設定とは別に 2 秒ごとに計測します。"),
         "control.failed": S(zhHans: "控制指令失败，已停止本次指令并请求系统接管。", en: "Control failed; the command was stopped and automatic control requested.", zhHant: "控制指令失敗，已停止本次指令並請求系統接管。", ja: "制御に失敗しました。コマンドを中止し、自動制御を要求しました。"),
         "control.installFailed": S(zhHans: "控制服务安装或移除未完成，请重试。", en: "Control service setup did not complete. Please retry.", zhHant: "控制服務安裝或移除未完成，請重試。", ja: "制御サービスの設定が完了しませんでした。再試行してください。"),
         "control.sensorPaused": S(zhHans: "温度过期或风扇范围无效，曲线控制已暂停并请求系统接管。", en: "Temperature is stale or fan limits are invalid. Control is paused and automatic control requested.", zhHant: "溫度過期或風扇範圍無效，曲線控制已暫停並請求系統接管。", ja: "温度が古いかファン範囲が無効です。制御を一時停止し自動制御を要求しました。"),
@@ -112,6 +115,7 @@ enum L {
         // Appearance
         "appearance.dark":  S(zhHans: "深色", en: "Dark",  zhHant: "深色", ja: "ダーク"),
         "appearance.light": S(zhHans: "浅色", en: "Light", zhHant: "淺色", ja: "ライト"),
+        "appearance.system": S(zhHans: "跟随系统", en: "System", zhHant: "跟隨系統", ja: "システム"),
 
         // Menu panel + menu bar
         "m.socAvg":   S(zhHans: "SoC 平均", en: "SoC avg", zhHant: "SoC 平均", ja: "SoC 平均"),
@@ -196,10 +200,10 @@ enum L {
 
         // General pane
         "g.title":       S(zhHans: "通用", en: "General", zhHant: "通用", ja: "一般"),
-        "g.subtitle":    S(zhHans: "显示、语言与配色", en: "Display, language & colors", zhHant: "顯示、語言與配色", ja: "表示・言語・配色"),
-        "g.sectionDisplay": S(zhHans: "显示", en: "Display", zhHant: "顯示", ja: "表示"),
-        "g.sectionMenubar": S(zhHans: "菜单栏", en: "Menu bar", zhHant: "選單列", ja: "メニューバー"),
-        "g.sectionStartup": S(zhHans: "启动", en: "Startup", zhHant: "啟動", ja: "起動"),
+        "g.subtitle":    S(zhHans: "外观、菜单栏、图表与启动", en: "Appearance, menu bar, charts and startup", zhHant: "外觀、選單列、圖表與啟動", ja: "外観・メニューバー・チャート・起動"),
+        "g.sectionAppearance": S(zhHans: "外观", en: "Appearance", zhHant: "外觀", ja: "外観"),
+        "g.sectionMenubar": S(zhHans: "菜单栏与面板", en: "Menu bar & panel", zhHant: "選單列與面板", ja: "メニューバーとパネル"),
+        "g.sectionStartup": S(zhHans: "启动与采样", en: "Startup & sampling", zhHant: "啟動與取樣", ja: "起動とサンプリング"),
         "g.launchAtLogin":  S(zhHans: "登录时启动", en: "Launch at login", zhHant: "登入時啟動", ja: "ログイン時に起動"),
         "g.loginApproval":  S(zhHans: "需要在「系统设置 › 通用 › 登录项」中允许 OmniStats。", en: "Allow OmniStats in System Settings › General › Login Items.", zhHant: "需要在「系統設定 › 一般 › 登入項目」中允許 OmniStats。", ja: "「システム設定 › 一般 › ログイン項目」で OmniStats を許可してください。"),
         "g.openLoginItems": S(zhHans: "打开登录项", en: "Open Login Items", zhHant: "打開登入項目", ja: "ログイン項目を開く"),
@@ -437,21 +441,27 @@ enum L {
 
         // About pane
         "a.title":    S(zhHans: "关于", en: "About", zhHant: "關於", ja: "情報"),
-        "a.subtitle": S(zhHans: "OmniStats %@ · Apple Silicon 系统监控",
-                        en: "OmniStats %@ · Apple Silicon system monitor",
-                        zhHant: "OmniStats %@ · Apple Silicon 系統監控",
-                        ja: "OmniStats %@ · Apple Silicon システムモニター"),
-        "a.body":     S(zhHans: "OmniStats 是一套轻量的 Apple Silicon 菜单栏系统监控工具。当前提供温度监控与风扇控制:温度取自 HID 传感器,风扇经 SMC 控制,采用温度平滑 + 限斜率渐进调速,并带安全看门狗。",
-                        en: "OmniStats is a lightweight Apple Silicon menu-bar system monitor. It offers temperature monitoring and fan control: temperatures come from HID sensors, fans are driven via SMC with temperature smoothing, slew-rate limiting, and a safety watchdog.",
-                        zhHant: "OmniStats 是一套輕量的 Apple Silicon 選單列系統監控工具。目前提供溫度監控與風扇控制:溫度取自 HID 感測器,風扇經 SMC 控制,採用溫度平滑 + 限斜率漸進調速,並帶安全看門狗。",
-                        ja: "OmniStats は軽量な Apple Silicon 向けメニューバー システムモニターです。温度監視とファン制御に対応:温度は HID センサーから取得し、ファンは SMC 経由で温度平滑化・スルーレート制限・安全ウォッチドッグ付きで制御します。"),
+        "a.subtitle": S(zhHans: "版本、更新与组件", en: "Version, updates and components", zhHant: "版本、更新與元件", ja: "バージョン・アップデート・コンポーネント"),
+        "a.body":     S(zhHans: "轻量的 Apple Silicon 菜单栏系统监控：温度、风扇、电池、网络与进程一目了然，还能控制风扇、管理充电、卸载应用和隐藏菜单栏图标。", en: "A lightweight Apple Silicon menu-bar monitor: temperatures, fans, battery, network and processes at a glance, plus fan control, charge management, an app uninstaller and menu-bar icon hiding.", zhHant: "輕量的 Apple Silicon 選單列系統監控：溫度、風扇、電池、網路與行程一目了然，還能控制風扇、管理充電、解除安裝應用程式和隱藏選單列圖示。", ja: "軽量な Apple Silicon 向けメニューバーシステムモニタ。温度・ファン・バッテリー・ネットワーク・プロセスをひと目で確認でき、ファン制御、充電管理、アプリのアンインストール、メニューバーアイコンの非表示もできます。"),
         "a.githubRepo":     S(zhHans: "GitHub 仓库", en: "GitHub repo", zhHant: "GitHub 倉庫", ja: "GitHub リポジトリ"),
         "a.softwareUpdate": S(zhHans: "软件更新", en: "Software update", zhHant: "軟件更新", ja: "ソフトウェア更新"),
         "a.autoCheck":      S(zhHans: "自动检查更新", en: "Check for updates automatically", zhHant: "自動檢查更新", ja: "自動で更新を確認"),
         "a.autoDownload":   S(zhHans: "后台自动下载,就绪后提示安装", en: "Auto-download in the background, then prompt to install", zhHant: "背景自動下載,就緒後提示安裝", ja: "バックグラウンドで自動ダウンロードし、準備後にインストールを確認"),
         "a.checkNow":       S(zhHans: "立即检查", en: "Check now", zhHant: "立即檢查", ja: "今すぐ確認"),
-        "a.currentVersion": S(zhHans: "当前版本 %@", en: "Current version %@", zhHant: "目前版本 %@", ja: "現在のバージョン %@"),
-        "a.removeHelper":   S(zhHans: "移除风扇控制助手", en: "Remove fan-control helper", zhHant: "移除風扇控制助手", ja: "ファン制御ヘルパーを削除"),
+        "a.versionBadge":   S(zhHans: "版本 %@", en: "Version %@", zhHant: "版本 %@", ja: "バージョン %@"),
+        "a.releases":       S(zhHans: "版本发布", en: "Releases", zhHant: "版本發佈", ja: "リリース"),
+        "a.issues":         S(zhHans: "反馈问题", en: "Report an issue", zhHant: "回報問題", ja: "問題を報告"),
+        "a.licenseLink":    S(zhHans: "许可证", en: "License", zhHant: "授權條款", ja: "ライセンス"),
+        "a.components":     S(zhHans: "组件", en: "Components", zhHant: "元件", ja: "コンポーネント"),
+        "a.helper":         S(zhHans: "特权助手", en: "Privileged helper", zhHant: "特權助手", ja: "特権ヘルパー"),
+        "a.helperDetail":   S(zhHans: "风扇控制和电池管理（充电上限、放电、校准）都依赖它。它以 root 身份运行；发布版只接受同一证书签名的 OmniStats。", en: "Fan control and battery management (charge limit, discharge, calibration) depend on it. It runs as root; release builds only accept OmniStats signed with the same certificate.", zhHant: "風扇控制和電池管理（充電上限、放電、校準）都依賴它。它以 root 身分執行；發佈版只接受同一憑證簽署的 OmniStats。", ja: "ファン制御とバッテリー管理（充電上限・放電・キャリブレーション）はこれに依存します。root として動作し、リリース版は同じ証明書で署名された OmniStats だけを受け付けます。"),
+        "a.helperInstalled": S(zhHans: "已安装", en: "Installed", zhHant: "已安裝", ja: "インストール済み"),
+        "a.helperOutdated": S(zhHans: "需要更新", en: "Update needed", zhHant: "需要更新", ja: "要アップデート"),
+        "a.helperMissing":  S(zhHans: "未安装", en: "Not installed", zhHant: "未安裝", ja: "未インストール"),
+        "a.helperInstall":  S(zhHans: "安装…", en: "Install…", zhHant: "安裝…", ja: "インストール…"),
+        "a.removeHelper":   S(zhHans: "移除…", en: "Remove…", zhHant: "移除…", ja: "削除…"),
+        "a.removeConfirmTitle": S(zhHans: "移除特权助手？", en: "Remove the privileged helper?", zhHant: "移除特權助手？", ja: "特権ヘルパーを削除しますか？"),
+        "a.removeConfirmBody": S(zhHans: "风扇会回到系统自动控制，充电上限、放电和校准都会停止，充电恢复正常。需要管理员密码，之后可以随时重新安装。", en: "Fans return to automatic control, and the charge limit, discharge and calibration stop, so the battery charges normally again. This needs an administrator password; you can reinstall at any time.", zhHant: "風扇會回到系統自動控制，充電上限、放電和校準都會停止，充電恢復正常。需要管理員密碼，之後可以隨時重新安裝。", ja: "ファンは自動制御に戻り、充電上限・放電・キャリブレーションは停止して通常どおり充電されます。管理者パスワードが必要です。いつでも再インストールできます。"),
         "a.license":        S(zhHans: "MIT License · 开源项目,欢迎 issue 与 PR。",
                               en: "MIT License · open source — issues & PRs welcome.",
                               zhHant: "MIT License · 開源專案,歡迎 issue 與 PR。",
