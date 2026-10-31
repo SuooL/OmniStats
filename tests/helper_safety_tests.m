@@ -43,6 +43,10 @@ static BatteryReading testReading;
 static char testConflict[32];
 static int testReadBattery(BatteryReading *out) { *out=testReading; return testReading.valid ? 0 : -1; }
 static int testFindConflict(char *name, size_t size) { strlcpy(name,testConflict,size); return testConflict[0]!=0; }
+// The battery profile's energy mode: 0 Automatic, 1 Low Power, 2 High Power.
+static int testPowerMode=1, powerModeReads, lowPowerWrites, failPowerMode;
+static int testReadPowerMode(void) { powerModeReads++; return failPowerMode ? -1 : testPowerMode; }
+static int testWriteLowPower(int on) { lowPowerWrites++; if(failPowerMode) return -1; testPowerMode=on; return 0; }
 static void command(int fd, int reader, const char *line, char *reply, size_t size) {
     assert(handleLine(fd,line)==0);
     ssize_t count=read(reader,reply,size-1);
@@ -91,8 +95,13 @@ int main(void) {
     else assert(!gSignedHelper && !gClientRequirement && peerSigned(pair[0])==1);
     close(pair[0]); close(pair[1]);
 
-    // Battery charge control.
+    // Battery charge control. Nothing below may touch the real settings file or pmset.
+    char directory[]="/tmp/omnistats-battery-XXXXXX";
+    assert(mkdtemp(directory));
+    char configPath[256]; snprintf(configPath,sizeof(configPath),"%s/battery.plist",directory);
+    gBatteryConfigPath=configPath;
     gReadBattery=testReadBattery; gFindConflict=testFindConflict;
+    gReadPowerMode=testReadPowerMode; gWriteLowPower=testWriteLowPower;
     BatteryConfig on={1,80,5,0,0}, off=on; off.enabled=0;
     BatteryConfig full=on; full.limit=100;
     assert(batteryShouldInhibit(on,(BatteryReading){1,80,1},0,0)==1);
@@ -177,22 +186,31 @@ int main(void) {
     gBatteryStopping=0; gLedSupported=0; gBattery=on;
 
     // Adapter cut-off: discharge, auto-discharge, calibration.
-    BatteryReading fullCharge={1,100,1,1,3000,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
-    assert(calibrationNext(CalCharge1,fullCharge,10,on,0)==CalHold1 && calibrationNext(CalCharge1,at50,10,on,0)==CalCharge1);
-    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on,0)==-1 && calibrationNext(CalCharge1,unplugged,1,on,0)==-1);
-    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on,0)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on,0)==CalDischarge);
-    assert(calibrationNext(CalDischarge,at50,10,on,0)==CalDischarge && calibrationNext(CalDischarge,low,10,on,0)==CalCharge2);
-    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on,0)==-1);
-    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on,0)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off,0)==CalIdle);
-    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on,0)==CalIdle);
-    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on,0)==CalDischarge);
-    // 99 % counts as full once the charger has finished, not while it tops off or heat holds it.
-    BatteryReading toppingOff={1,99,1,1,3000,1}, finished={1,99,1,0,3000,1}, cutAt99={1,99,0,0,3000,1};
-    assert(calibrationNext(CalCharge1,toppingOff,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,finished,10,on,0)==CalHold1);
-    assert(calibrationNext(CalCharge2,finished,10,on,0)==CalHold2 && calibrationNext(CalCharge1,finished,10,on,1)==CalCharge1);
-    assert(calibrationNext(CalCharge1,cutAt99,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,(BatteryReading){1,98,1,0,3000,1},10,on,0)==CalCharge1);
-    // A long top-off at 99 % moves on instead of failing the run.
-    assert(calibrationNext(CalCharge1,toppingOff,CAL_CHARGE_MAX_SEC+1,on,0)==CalHold1);
+    BatteryReading fullCharge={1,100,1,0,3000,1,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
+    assert(calibrationNext(CalCharge1,fullCharge,10,on)==CalHold1 && calibrationNext(CalCharge1,at50,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on)==-1 && calibrationNext(CalCharge1,unplugged,1,on)==-1);
+    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,10,on)==CalDischarge && calibrationNext(CalDischarge,low,10,on)==CalCharge2);
+    // 100 % -> 15 % gets a day: a lightly used Mac drains ~5 % an hour, so 8 h stopped it at ~60 %.
+    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC+1,on)==-1);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,90,1,0,3000,1},DISCHARGE_MAX_SEC+1,on)==CalIdle);
+    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off)==CalIdle);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on)==CalIdle);
+    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on)==CalDischarge);
+    // Full means the charger finished (FullyCharged). Measured on an M5 Pro: 100 % on
+    // screen through 20 more minutes of charging, and "not charging" while our limit holds.
+    BatteryReading toppingOff={1,100,1,1,3000,1,0}, limitHeld={1,100,1,0,3000,1,0}, heldAt99={1,99,1,0,3000,1,0};
+    BatteryReading finished={1,99,1,0,3000,1,1}, cutAt99={1,99,0,0,3000,1,0}, bogus={1,50,1,0,3000,1,1};
+    assert(calibrationNext(CalCharge1,toppingOff,10,on)==CalCharge1 && calibrationNext(CalCharge1,limitHeld,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,heldAt99,10,on)==CalCharge1 && calibrationNext(CalCharge1,cutAt99,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,finished,10,on)==CalHold1 && calibrationNext(CalCharge2,finished,10,on)==CalHold2);
+    assert(calibrationNext(CalCharge1,bogus,10,on)==CalCharge1);
+    // A long top-off at 99 % moves on instead of failing the run; below 99 % it stops.
+    assert(calibrationNext(CalCharge1,toppingOff,CAL_CHARGE_MAX_SEC+1,on)==CalHold1);
+    assert(calibrationNext(CalCharge2,heldAt99,CAL_CHARGE_MAX_SEC+1,on)==CalHold2);
+    assert(calibrationNext(CalCharge1,(BatteryReading){1,98,1,0,3000,1,0},CAL_CHARGE_MAX_SEC+1,on)==-1);
     BatteryConfig autoOn=on; autoOn.autoDischarge=1;
     assert(batteryDischargeTarget(on,at50,0,CalIdle)==0 && batteryDischargeTarget(on,at50,30,CalIdle)==30);
     assert(batteryDischargeTarget(autoOn,(BatteryReading){1,90,1,0,0,1},0,CalIdle)==80 && batteryDischargeTarget(autoOn,(BatteryReading){1,80,1,0,0,1},0,CalIdle)==0);
@@ -236,19 +254,50 @@ int main(void) {
     gBattery=autoOn; testReading.percent=90; batteryTick(); assert(chie==0x08);
     testReading.percent=80; batteryTick(); assert(chie==0x00 && chte[0]==1);
 
-    // Calibration charges past the limit, then discharges to 15 %.
+    // The battery profile's energy mode, as `pmset -g custom` prints it.
+    assert(parseBatteryPowerMode("Battery Power:\n Sleep On Power Button 1\n powermode            1\n standby 1\nAC Power:\n powermode 0\n")==1);
+    assert(parseBatteryPowerMode("Battery Power:\n powermode 0\nAC Power:\n powermode 1\n")==0);
+    assert(parseBatteryPowerMode("AC Power:\n powermode 1\nBattery Power:\n powermode 2")==2);
+    assert(parseBatteryPowerMode("Battery Power:\n lowpowermode 1\n")==1 && parseBatteryPowerMode("Battery Power:\n lowpowermode 2\n")==-1);
+    assert(parseBatteryPowerMode("AC Power:\n lowpowermode 1\n")==-1 && parseBatteryPowerMode("")==-1);
+    assert(parseBatteryPowerMode("Battery Power:\n powermode x\n powermode 7\n")==-1);
+    // The real pmset, read-only (a Mac without a battery prints no battery profile).
+    int realMode=readBatteryPowerMode(); assert(realMode>=-1 && realMode<=2);
+    const char *badArguments[]={"pmset","-g","no-such-setting",NULL}; char scratch[8];
+    assert(runPmset(badArguments,scratch,sizeof(scratch))!=0);
+
+    // Calibration charges past the limit, then discharges to 15 %, out of Low Power Mode.
     gBattery=on; gCalPhase=CalCharge1; gCalPhaseStart=wallClock(); testReading.percent=90;
-    batteryTick(); assert(chte[0]==0 && chie==0x00 && batteryKeepsAwake());
-    testReading.percent=100; batteryTick(); assert(gCalPhase==CalHold1);
+    testPowerMode=1; powerModeReads=0; lowPowerWrites=0;
+    batteryTick(); assert(chte[0]==0 && chie==0x00 && batteryKeepsAwake() && powerModeReads==0);
+    testReading.percent=100; batteryTick(); assert(gCalPhase==CalCharge1 && chte[0]==0);  // still topping off
+    testReading.fullyCharged=1; batteryTick(); assert(gCalPhase==CalHold1);
+    testReading.fullyCharged=0;
     gCalPhaseStart=wallClock()-CAL_HOLD_SEC; batteryTick(); assert(gCalPhase==CalDischarge && chie==0x08);
+    assert(testPowerMode==0 && gLowPowerOverridden && powerModeReads==1 && lowPowerWrites==1);
+    batteryTick(); assert(powerModeReads==1);  // looked at once per discharge
+    gCalPhaseStart=wallClock()-DISCHARGE_MAX_SEC-60; batteryTick(); assert(gCalPhase==CalDischarge && chie==0x08);
     testReading.percent=15; batteryTick(); assert(gCalPhase==CalCharge2 && chie==0x00 && chte[0]==0);
+    assert(testPowerMode==1 && !gLowPowerOverridden && lowPowerWrites==2);
     acw=0xff; batteryTick(); assert(gCalPhase==CalIdle && gCalResult==2); acw=0x04;
+    // Automatic or High Power are left alone; switching Low Power back on mid-discharge sticks.
+    gCalPhase=CalDischarge; gCalPhaseStart=wallClock(); testReading.percent=60; testPowerMode=0; lowPowerWrites=0;
+    batteryTick(); assert(chie==0x08 && !gLowPowerOverridden && lowPowerWrites==0);
+    testPowerMode=1; batteryTick(); assert(testPowerMode==1 && lowPowerWrites==0);
+    gCalPhase=CalIdle; batteryTick(); assert(chie==0x00 && testPowerMode==1 && lowPowerWrites==0);
+    // A mode picked meanwhile is kept; a failed restore is retried; a conflict or exit gives it back.
+    gCalPhase=CalDischarge; batteryTick(); assert(testPowerMode==0 && gLowPowerOverridden);
+    testPowerMode=2; gCalPhase=CalIdle; batteryTick(); assert(testPowerMode==2 && !gLowPowerOverridden);
+    testPowerMode=1; gCalPhase=CalDischarge; batteryTick(); assert(testPowerMode==0 && gLowPowerOverridden);
+    failPowerMode=1; gCalPhase=CalIdle; batteryTick(); assert(gLowPowerOverridden && batteryActive());
+    failPowerMode=0; batteryTick(); assert(testPowerMode==1 && !gLowPowerOverridden);
+    gCalPhase=CalDischarge; batteryTick(); assert(testPowerMode==0);
+    strlcpy(testConflict,"AlDente",sizeof(testConflict)); batteryTick(); assert(testPowerMode==1 && chie==0x00);
+    testConflict[0]=0; batteryTick(); assert(testPowerMode==0 && chie==0x08);
+    batteryRelease(); assert(testPowerMode==1 && !gLowPowerOverridden && chie==0x00);
+    gBatteryStopping=0; gCalPhase=CalIdle; gLowPowerChecked=0;
     gBattery=on; gCalResult=0; gAdapterSupported=0;
 
-    char directory[]="/tmp/omnistats-battery-XXXXXX";
-    assert(mkdtemp(directory));
-    char configPath[256]; snprintf(configPath,sizeof(configPath),"%s/battery.plist",directory);
-    gBatteryConfigPath=configPath;
     gBattery=kBatteryDefaults; testReading=(BatteryReading){1,70,1};
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
     char reply[1024];
@@ -277,6 +326,13 @@ int main(void) {
     gCalPhase=CalIdle; loadBatteryConfig(); assert(gCalPhase==CalCharge1 && gCalPhaseStart>0);
     command(pair[0],pair[1],"BCALIBRATE 0",reply,sizeof(reply)); assert(!strcmp(reply,"OK\n") && gCalPhase==CalIdle && gCalResult==2);
     gAdapterSupported=0; gCalResult=0;
+    // Low Power Mode switched off by a helper that crashed comes back after the restart,
+    // even with every other feature off.
+    gBattery.enabled=0; gInhibited=0; chte[0]=0;
+    gLowPowerOverridden=1; saveBatteryConfig(gBattery); gLowPowerOverridden=0;
+    loadBatteryConfig(); assert(gLowPowerOverridden && !gBattery.enabled && batteryActive());
+    testPowerMode=0; batteryTick(); assert(testPowerMode==1 && !gLowPowerOverridden && !batteryActive());
+    gLowPowerOverridden=1; loadBatteryConfig(); assert(!gLowPowerOverridden);
     FILE *corrupt=fopen(configPath,"w"); fputs("<plist><dict><key>limit</key><integer>5</integer></dict></plist>",corrupt); fclose(corrupt);
     loadBatteryConfig(); assert(memcmp(&gBattery,&kBatteryDefaults,sizeof(gBattery))==0);
     gBatteryConfigPath="/System/omnistats-battery.plist";

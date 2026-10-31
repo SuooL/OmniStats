@@ -135,7 +135,7 @@ the real app or a long-running leak test.
 - The **helper** verifies the peer uid (plus the peer's code signature when the
   helper is certificate-signed), and a watchdog reverts to firmware auto if the
   app disconnects or hangs.
-- **Battery charge control** (protocol 7: `BSTATUS`, `BSET key=value…`,
+- **Battery charge control** (protocol 8: `BSTATUS`, `BSET key=value…`,
   `BTOPUP 0|1`, `BDISCHARGE <10–95|0>`, `BCALIBRATE 0|1`; limit, sailing,
   sleep options, heat protection, MagSafe LED, adapter cut-off)
   runs inside the helper on its own serial queue: a 10 s tick,

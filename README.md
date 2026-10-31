@@ -155,9 +155,11 @@ closed.
 - **Discharge & calibration** pause the power adapter (SMC `CHIE`) so a
   plugged-in Mac runs from its battery: discharge to a chosen level, keep it
   down at the limit automatically, or calibrate (full → hold 1 h → 15 % → full →
-  hold 1 h → back to the limit, usually 6–10 h, every step automatic; 99 % with
-  charging finished counts as full). These are deliberately not reachable from
-  links or schedules.
+  hold 1 h → back to the limit, every step automatic; full means macOS reports
+  the charge finished, which can come a while after the screen shows 100 %). Discharging is as fast as the Mac's use: lightly used, the run
+  takes most of a day, so the step to 15 % gets up to 24 h, and Low Power Mode
+  is switched to Automatic during it and restored afterwards. These are
+  deliberately not reachable from links or schedules.
 
 ## Uninstalling apps
 
@@ -245,7 +247,8 @@ All three are tunable under **Fans → Advanced**, with a one-click restore.
 - Pausing the adapter is the one control that could drain a plugged-in Mac, so
   OmniStats restores it the moment you unplug (SMC `AC-W` tells a real unplug
   from its own pause), before the Mac sleeps, when the target, a 10 % floor or
-  an 8-hour limit is reached, when the battery can't be read, when another
+  an 8-hour limit (24 hours for calibration's discharge to 15 %) is reached,
+  when the battery can't be read, when another
   charge manager appears, and whenever the helper starts or stops.
 
 ## Updates
