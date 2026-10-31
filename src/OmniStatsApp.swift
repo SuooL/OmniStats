@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let activity = ActivityState()
     let resources = ResourceSampler()
     let battery = BatterySampler()
+    let batteryHistory = BatteryHistory()   // records on its own; a no-op without a battery
     lazy var charge = ChargeController(monitor: monitor)
     lazy var engine = Engine(monitor: monitor, store: store)
     private lazy var sampling = SamplingCoordinator(monitor: monitor, net: net, proc: proc,
@@ -48,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             activity: activity, resources: resources, battery: battery, charge: charge,
             onOpenSettings: { settings.show() })
         _ = sampling
+        batteryHistory.start()
         scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
         _ = menuBar   // after OmniStats' own icon, which anchors the menu-bar controls
 
@@ -76,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ n: Notification) {
         store.flush()
+        batteryHistory.flush()
         monitor.shutdown()
     }
 
