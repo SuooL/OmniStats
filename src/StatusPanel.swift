@@ -90,6 +90,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     private let resources: ResourceSampler
     private let battery: BatterySampler
     private let charge: ChargeController
+    private let history: BatteryHistory?
 
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelState = PanelState()
@@ -117,8 +118,9 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     init(mon: Monitor, store: ConfigStore, engine: Engine, net: NetSampler,
          proc: ProcSampler, netProc: NetProcSampler, activity: ActivityState = ActivityState(),
          resources: ResourceSampler = ResourceSampler(),
-         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil,
+         battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil, history: BatteryHistory? = nil,
          onOpenSettings: @MainActor @escaping () -> Void) {
+        self.history = history
         self.mon = mon; self.store = store; self.engine = engine
         self.net = net; self.proc = proc; self.netProc = netProc
         self.onOpenSettings = onOpenSettings
@@ -235,7 +237,7 @@ final class StatusItemController: NSObject, NSWindowDelegate {
     // MARK: panel lifecycle
     private func buildPanel() {
         let root = MenuPanel(mon: mon, store: store, engine: engine, net: net, proc: proc,
-                             resources: resources, battery: battery, charge: charge, state: panelState,
+                             resources: resources, battery: battery, charge: charge, history: history, state: panelState,
                              onOpenSettings: { [weak self] in
                                  self?.closePanel()
                                  self?.onOpenSettings()
@@ -488,13 +490,15 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let charge: ChargeController
     private let menuBar: MenuBarManager?
     private let uninstaller: AppUninstaller?
+    private let history: BatteryHistory?
     private let settingsState = SettingsState()
     private var savedFrame: NSRect?
     private(set) var window: NSWindow?
 
     init(mon: Monitor, store: ConfigStore, engine: Engine, updater: Updater, activity: ActivityState = ActivityState(),
          battery: BatterySampler = BatterySampler(), charge: ChargeController? = nil, menuBar: MenuBarManager? = nil,
-         uninstaller: AppUninstaller? = nil) {
+         uninstaller: AppUninstaller? = nil, history: BatteryHistory? = nil) {
+        self.history = history
         self.mon = mon; self.store = store; self.engine = engine; self.updater = updater
         self.activity = activity; self.battery = battery
         self.charge = charge ?? ChargeController(monitor: mon)
@@ -508,7 +512,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             let host = NSHostingController(
                 rootView: SettingsView(mon: mon, store: store, engine: engine, updater: updater,
                                        battery: battery, charge: charge, menuBar: menuBar, uninstaller: uninstaller,
-                                       state: settingsState))
+                                       history: history, state: settingsState))
             let w = NSWindow(contentViewController: host)
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
             w.title = L.t("settings.window")

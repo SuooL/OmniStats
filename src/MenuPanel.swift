@@ -43,6 +43,7 @@ struct MenuPanel: View {
     let resources: ResourceSampler
     let battery: BatterySampler
     let charge: ChargeController
+    var history: BatteryHistory?
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
     @ObservedObject var state: PanelState
@@ -78,7 +79,7 @@ struct MenuPanel: View {
 
             if store.config.showBatteryPanel && battery.isPresent {
                 divider
-                BatteryPanelSection(sampler: battery, charge: charge)
+                BatteryPanelSection(sampler: battery, charge: charge, history: history)
             }
 
             if mon.fanCount > 0 {

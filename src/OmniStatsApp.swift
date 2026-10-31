@@ -42,12 +42,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
                                                 activity: activity, battery: battery, charge: charge, menuBar: menuBar,
-                                                uninstaller: AppUninstaller())
+                                                uninstaller: AppUninstaller(), history: batteryHistory.isPresent ? batteryHistory : nil)
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
             activity: activity, resources: resources, battery: battery, charge: charge,
-            onOpenSettings: { settings.show() })
+            history: batteryHistory.isPresent ? batteryHistory : nil, onOpenSettings: { settings.show() })
         _ = sampling
         batteryHistory.start()
         scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
