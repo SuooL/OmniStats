@@ -186,26 +186,31 @@ int main(void) {
     gBatteryStopping=0; gLedSupported=0; gBattery=on;
 
     // Adapter cut-off: discharge, auto-discharge, calibration.
-    BatteryReading fullCharge={1,100,1,1,3000,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
-    assert(calibrationNext(CalCharge1,fullCharge,10,on,0)==CalHold1 && calibrationNext(CalCharge1,at50,10,on,0)==CalCharge1);
-    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on,0)==-1 && calibrationNext(CalCharge1,unplugged,1,on,0)==-1);
-    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on,0)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on,0)==CalDischarge);
-    assert(calibrationNext(CalDischarge,at50,10,on,0)==CalDischarge && calibrationNext(CalDischarge,low,10,on,0)==CalCharge2);
+    BatteryReading fullCharge={1,100,1,0,3000,1,1}, at50={1,50,1,0,3000,1}, low={1,15,1,0,3000,1}, unplugged={1,50,0,0,3000,0};
+    assert(calibrationNext(CalCharge1,fullCharge,10,on)==CalHold1 && calibrationNext(CalCharge1,at50,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,at50,CAL_CHARGE_MAX_SEC+1,on)==-1 && calibrationNext(CalCharge1,unplugged,1,on)==-1);
+    assert(calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC-1,on)==CalHold1 && calibrationNext(CalHold1,fullCharge,CAL_HOLD_SEC,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,10,on)==CalDischarge && calibrationNext(CalDischarge,low,10,on)==CalCharge2);
     // 100 % -> 15 % gets a day: a lightly used Mac drains ~5 % an hour, so 8 h stopped it at ~60 %.
-    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on,0)==CalDischarge);
-    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC,on,0)==CalDischarge);
-    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC+1,on,0)==-1);
-    assert(calibrationNext(CalToLimit,(BatteryReading){1,90,1,0,3000,1},DISCHARGE_MAX_SEC+1,on,0)==CalIdle);
-    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on,0)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off,0)==CalIdle);
-    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on,0)==CalIdle);
-    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on,0)==CalDischarge);
-    // 99 % counts as full once the charger has finished, not while it tops off or heat holds it.
-    BatteryReading toppingOff={1,99,1,1,3000,1}, finished={1,99,1,0,3000,1}, cutAt99={1,99,0,0,3000,1};
-    assert(calibrationNext(CalCharge1,toppingOff,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,finished,10,on,0)==CalHold1);
-    assert(calibrationNext(CalCharge2,finished,10,on,0)==CalHold2 && calibrationNext(CalCharge1,finished,10,on,1)==CalCharge1);
-    assert(calibrationNext(CalCharge1,cutAt99,10,on,0)==CalCharge1 && calibrationNext(CalCharge1,(BatteryReading){1,98,1,0,3000,1},10,on,0)==CalCharge1);
-    // A long top-off at 99 % moves on instead of failing the run.
-    assert(calibrationNext(CalCharge1,toppingOff,CAL_CHARGE_MAX_SEC+1,on,0)==CalHold1);
+    assert(calibrationNext(CalDischarge,at50,DISCHARGE_MAX_SEC+1,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC,on)==CalDischarge);
+    assert(calibrationNext(CalDischarge,at50,CAL_DISCHARGE_MAX_SEC+1,on)==-1);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,90,1,0,3000,1},DISCHARGE_MAX_SEC+1,on)==CalIdle);
+    assert(calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,on)==CalToLimit && calibrationNext(CalHold2,fullCharge,CAL_HOLD_SEC,off)==CalIdle);
+    assert(calibrationNext(CalToLimit,(BatteryReading){1,80,1,0,3000,1},10,on)==CalIdle);
+    assert(calibrationNext(CalDischarge,(BatteryReading){0,50,1,0,0,1},10,on)==CalDischarge);
+    // Full means the charger finished (FullyCharged). Measured on an M5 Pro: 100 % on
+    // screen through 20 more minutes of charging, and "not charging" while our limit holds.
+    BatteryReading toppingOff={1,100,1,1,3000,1,0}, limitHeld={1,100,1,0,3000,1,0}, heldAt99={1,99,1,0,3000,1,0};
+    BatteryReading finished={1,99,1,0,3000,1,1}, cutAt99={1,99,0,0,3000,1,0}, bogus={1,50,1,0,3000,1,1};
+    assert(calibrationNext(CalCharge1,toppingOff,10,on)==CalCharge1 && calibrationNext(CalCharge1,limitHeld,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,heldAt99,10,on)==CalCharge1 && calibrationNext(CalCharge1,cutAt99,10,on)==CalCharge1);
+    assert(calibrationNext(CalCharge1,finished,10,on)==CalHold1 && calibrationNext(CalCharge2,finished,10,on)==CalHold2);
+    assert(calibrationNext(CalCharge1,bogus,10,on)==CalCharge1);
+    // A long top-off at 99 % moves on instead of failing the run; below 99 % it stops.
+    assert(calibrationNext(CalCharge1,toppingOff,CAL_CHARGE_MAX_SEC+1,on)==CalHold1);
+    assert(calibrationNext(CalCharge2,heldAt99,CAL_CHARGE_MAX_SEC+1,on)==CalHold2);
+    assert(calibrationNext(CalCharge1,(BatteryReading){1,98,1,0,3000,1,0},CAL_CHARGE_MAX_SEC+1,on)==-1);
     BatteryConfig autoOn=on; autoOn.autoDischarge=1;
     assert(batteryDischargeTarget(on,at50,0,CalIdle)==0 && batteryDischargeTarget(on,at50,30,CalIdle)==30);
     assert(batteryDischargeTarget(autoOn,(BatteryReading){1,90,1,0,0,1},0,CalIdle)==80 && batteryDischargeTarget(autoOn,(BatteryReading){1,80,1,0,0,1},0,CalIdle)==0);
@@ -265,7 +270,9 @@ int main(void) {
     gBattery=on; gCalPhase=CalCharge1; gCalPhaseStart=wallClock(); testReading.percent=90;
     testPowerMode=1; powerModeReads=0; lowPowerWrites=0;
     batteryTick(); assert(chte[0]==0 && chie==0x00 && batteryKeepsAwake() && powerModeReads==0);
-    testReading.percent=100; batteryTick(); assert(gCalPhase==CalHold1);
+    testReading.percent=100; batteryTick(); assert(gCalPhase==CalCharge1 && chte[0]==0);  // still topping off
+    testReading.fullyCharged=1; batteryTick(); assert(gCalPhase==CalHold1);
+    testReading.fullyCharged=0;
     gCalPhaseStart=wallClock()-CAL_HOLD_SEC; batteryTick(); assert(gCalPhase==CalDischarge && chie==0x08);
     assert(testPowerMode==0 && gLowPowerOverridden && powerModeReads==1 && lowPowerWrites==1);
     batteryTick(); assert(powerModeReads==1);  // looked at once per discharge

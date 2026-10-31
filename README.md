@@ -155,8 +155,8 @@ closed.
 - **Discharge & calibration** pause the power adapter (SMC `CHIE`) so a
   plugged-in Mac runs from its battery: discharge to a chosen level, keep it
   down at the limit automatically, or calibrate (full → hold 1 h → 15 % → full →
-  hold 1 h → back to the limit, every step automatic; 99 % with charging finished
-  counts as full). Discharging is as fast as the Mac's use: lightly used, the run
+  hold 1 h → back to the limit, every step automatic; full means macOS reports
+  the charge finished, which can come a while after the screen shows 100 %). Discharging is as fast as the Mac's use: lightly used, the run
   takes most of a day, so the step to 15 % gets up to 24 h, and Low Power Mode
   is switched to Automatic during it and restored afterwards. These are
   deliberately not reachable from links or schedules.
