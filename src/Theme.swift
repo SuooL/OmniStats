@@ -1,10 +1,16 @@
 import SwiftUI
 
 enum AppearanceMode: String, Codable, CaseIterable, Identifiable {
-    case dark, light
+    case system, dark, light
     var id: String { rawValue }
-    var title: String { self == .dark ? L.t("appearance.dark") : L.t("appearance.light") }
-    var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+    var title: String { L.t("appearance.\(rawValue)") }
+    // .system follows macOS. Read only after applyAppChrome has cleared the app's
+    // own appearance; views read Theme.mode, which holds the resolved value.
+    var resolved: AppearanceMode {
+        guard self == .system else { return self }
+        return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .aqua ? .light : .dark
+    }
+    var colorScheme: ColorScheme { (self == .system ? Theme.mode : self) == .light ? .light : .dark }
 }
 
 // MARK: - Accent presets
@@ -46,10 +52,10 @@ enum MenuNumberColorMode: String, Codable, CaseIterable, Identifiable {
 // Design tokens — a "thermal instrument" palette with dark & light variants.
 // ConfigStore updates these tokens when presentation preferences change.
 enum Theme {
-    static var mode: AppearanceMode = .dark
+    static var mode: AppearanceMode = .dark   // always .dark or .light, never .system
     static var accentPreset: AccentPreset = .teal
 
-    private static func pick(_ dark: UInt32, _ light: UInt32) -> Color {
+    static func pick(_ dark: UInt32, _ light: UInt32) -> Color {
         Color(hex: mode == .dark ? dark : light)
     }
     static var bg:      Color { pick(0x0E1116, 0xD6DCE3) }   // window / sidebar
@@ -149,7 +155,7 @@ struct ThemedToggleStyle: ToggleStyle {
                 configuration.label
                 Spacer()
                 ZStack {
-                    Capsule().fill(configuration.isOn ? Theme.accent : Theme.line).frame(width: 40, height: 22)
+                    Capsule().fill(configuration.isOn ? Theme.accent : Theme.ink3.opacity(0.45)).frame(width: 40, height: 22)
                     Circle().fill(Color.white).shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
                         .padding(2).frame(width: 22, height: 22).offset(x: configuration.isOn ? 9 : -9)
                 }

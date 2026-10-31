@@ -112,24 +112,33 @@ final class BatteryReader {
         return installed ?? true
     }
 
-    func sample() -> BatterySnapshot? {
+    // The registry entry, looked up again after it disappears; 0 without a battery.
+    var entry: io_registry_entry_t {
         if service == 0 {
             service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
         }
+        return service
+    }
+
+    // Only the requested keys; nil when none of them could be read.
+    func read(_ keys: [String]) -> [String: Any]? {
+        let service = entry
         guard service != 0 else { return nil }
         var registry: [String: Any] = [:]
-        for key in BatterySnapshot.registryKeys {
+        for key in keys {
             if let value = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() {
                 registry[key] = value
             }
         }
         guard !registry.isEmpty else {
             // A terminated entry reads as empty; look it up again next time.
-            IOObjectRelease(service); service = 0
+            IOObjectRelease(service); self.service = 0
             return nil
         }
-        return BatterySnapshot(registry: registry)
+        return registry
     }
+
+    func sample() -> BatterySnapshot? { read(BatterySnapshot.registryKeys).map(BatterySnapshot.init(registry:)) }
 }
 
 final class BatterySampler: ObservableObject {

@@ -8,8 +8,8 @@ struct PanelSurface: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(fill)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(line, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).stroke(line, lineWidth: 1))
     }
 }
 
@@ -43,6 +43,7 @@ struct MenuPanel: View {
     let resources: ResourceSampler
     let battery: BatterySampler
     let charge: ChargeController
+    var history: BatteryHistory?
     // Expansion lives in the controller-owned state so closing the panel can
     // collapse it; see PanelState in StatusPanel.swift.
     @ObservedObject var state: PanelState
@@ -78,7 +79,7 @@ struct MenuPanel: View {
 
             if store.config.showBatteryPanel && battery.isPresent {
                 divider
-                BatteryPanelSection(sampler: battery, charge: charge)
+                BatteryPanelSection(sampler: battery, charge: charge, history: history)
             }
 
             if mon.fanCount > 0 {
@@ -108,13 +109,13 @@ struct MenuPanel: View {
                     Label(L.t("m.settings"), systemImage: "slider.horizontal.3")
                 }.buttonStyle(.plain).foregroundStyle(Theme.accent)
                 if mon.fanCount > 0 {
-                    Text("· \(L.t("m.mode")) \(store.config.mode.title)").font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                    Text("· \(L.t("m.mode")) \(store.config.mode.title)").font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
                 }
                 Spacer()
                 Button { mon.revertAll(); NSApplication.shared.terminate(nil) } label: {
                     Text(L.t("m.quit")).foregroundStyle(Theme.ink2)
                 }.buttonStyle(.plain)
-            }.font(.system(size: 12))
+            }.font(Theme.Typo.secondary)
         }
         .padding(14).frame(width: 300)
         // Report natural height and pin content to the top of the controller's
@@ -172,8 +173,8 @@ struct MenuPanel: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line, lineWidth: 1))
+        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).stroke(Theme.line, lineWidth: 1))
     }
     private func legendItem(_ title: String, _ value: String, _ color: Color) -> some View {
         HStack(spacing: 4) {
@@ -190,7 +191,7 @@ struct MenuPanel: View {
             divider
             Button { state.netExpanded.toggle() } label: {
                 HStack(spacing: 6) {
-                    Text(L.t("m.network")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                    Text(L.t("m.network")).font(Theme.Typo.secondary).foregroundStyle(Theme.ink2)
                     if !net.iface.isEmpty {
                         Text(net.iface).font(.system(size: 10)).foregroundStyle(Theme.ink3)
                     }
@@ -216,13 +217,13 @@ struct MenuPanel: View {
     private var processSection: some View {
         VStack(alignment: .leading, spacing: 5) {
             divider
-            Text(L.t("m.procHeader")).font(.system(size: 12)).foregroundStyle(Theme.ink2)
+            Text(L.t("m.procHeader")).font(Theme.Typo.secondary).foregroundStyle(Theme.ink2)
             if proc.top.isEmpty {
-                Text(L.t("m.idle")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+                Text(L.t("m.idle")).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
             } else {
                 ForEach(proc.top) { p in
                     HStack {
-                        Text(p.name).font(.system(size: 11)).foregroundStyle(Theme.ink)
+                        Text(p.name).font(Theme.Typo.caption).foregroundStyle(Theme.ink)
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(String(format: "%.0f%%", p.cpu)).font(Theme.telemetry(11)).foregroundStyle(Theme.accent)
@@ -234,7 +235,7 @@ struct MenuPanel: View {
 
     private var divider: some View { Rectangle().fill(Theme.line).frame(height: 1) }
     private func telem(_ k: String, _ v: String, _ c: Color) -> some View {
-        HStack { Text(k).font(.system(size: 12)).foregroundStyle(Theme.ink2); Spacer()
+        HStack { Text(k).font(Theme.Typo.secondary).foregroundStyle(Theme.ink2); Spacer()
             Text(v).font(Theme.telemetry(12)).foregroundStyle(c) }
     }
 }

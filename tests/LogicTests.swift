@@ -66,6 +66,17 @@ struct LogicTests {
         check(sanitized.curvePct(at: .nan).isNaN, "Invalid temperature must not select the hottest curve point")
         let oldConfig = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data("{}".utf8))
         check(oldConfig.refreshMode == .balanced, "Old configs must acquire the new default")
+        check(RefreshMode.responsive.intervals == (3, 1, 5) && RefreshMode.economical.intervals == (30, 10, 30),
+              "General's refresh table shows the intervals sampling uses")
+        let presentation = (Theme.mode, Theme.accentPreset, L.lang)
+        let followSystem = try! JSONDecoder().decode(OmniStatsConfig.self, from: Data(#"{"appearance":"system"}"#.utf8))
+        check(followSystem.appearance == .system && oldConfig.appearance == .dark, "Follow-system decodes; old configs stay dark")
+        syncPresentation(followSystem)
+        check(Theme.mode != .system && AppearanceMode.system.colorScheme == (Theme.mode == .light ? .light : .dark),
+              "Following the system resolves to dark or light")
+        syncPresentation(oldConfig)
+        check(Theme.mode == .dark && AppearanceMode.light.colorScheme == .light, "A fixed appearance wins over the system")
+        (Theme.mode, Theme.accentPreset, L.lang) = presentation
 
         for values: [CGFloat] in [[0, 1, 8, 8, 3, 0], [10, 10, 10], [100, 0, 100], [0, 1]] {
             let points = values.enumerated().map { CGPoint(x: CGFloat($0.offset * $0.offset + $0.offset), y: $0.element) }
@@ -696,6 +707,336 @@ struct LogicTests {
         let desktop = BatterySampler(isPresent: false, read: { charging })
         desktop.setSamplingInterval(5)
         check(desktop.samplingInterval == nil && !desktop.hasSample, "Macs without a battery never sample")
-        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding, uninstaller scanning")
+        checkBatteryHistory()
+        checkBatteryCharts()
+        print("PASS: history interpolation, resource APIs/lifecycle, display/control cadence, policy, validation, weighted averages, bounded histories, network parsing, control reconnect/expiry/failure, fresh-temperature safety, async sensors, persistence, login-item install location, battery parsing and sampling, battery history storage/downsampling/stats/estimates, charge-control status and native limit parsing, automation links and schedules, menu-bar hiding, uninstaller scanning")
+    }
+
+    // Records, files, queries and the recorder, all inside a temporary folder:
+    // the real Application Support folder is never touched.
+    // History chart helpers: round ticks, clock-aligned time ticks, state strips
+    // that keep gaps empty, and the crosshair's sample lookup.
+    @MainActor static func checkBatteryCharts() {
+        check(AxisTicks.ticks(0, 100, count: 3) == [0, 50, 100], "Charge ticks are 0/50/100")
+        check(AxisTicks.ticks(-9.4, 27.3) == [-20, 0, 20, 40], "Power ticks are round and include zero")
+        let fractional = AxisTicks.ticks(97.62, 98.11, count: 3)
+        check(fractional.first! <= 97.62 && fractional.last! >= 98.11
+              && fractional.allSatisfy { abs(($0 * 10).rounded() - $0 * 10) < 1e-6 }, "Fractional ticks land on one decimal, never 97.75")
+        check(AxisTicks.ticks(5, 5).count >= 2, "A flat series still gets a range")
+        check(AxisTicks.ticks(.nan, 1).isEmpty, "Non-finite input gives no ticks")
+        var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
+        let base = Date(timeIntervalSince1970: 1_793_400_000)   // 2026-10-30 22:40 UTC
+        let half = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(7200), step: 1800, calendar: utc)
+        check(half.count == 4 && half.allSatisfy { Int($0.timeIntervalSince1970) % 1800 == 0 }, "2 h ticks fall on the half hour")
+        let days = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(7 * 86400), step: 86400, calendar: utc)
+        check(days.count == 7 && days.allSatisfy { Int($0.timeIntervalSince1970) % 86400 == 0 }, "Day ticks fall on midnight")
+        let five = AxisTicks.timeTicks(from: base, to: base.addingTimeInterval(30 * 86400), step: 5 * 86400, calendar: utc)
+        let fiveDays = five.map { utc.component(.day, from: $0) }
+        check(fiveDays.allSatisfy { $0 % 5 == 1 && $0 <= 26 } && fiveDays.contains(26), "5-day ticks fall on days 1, 6 … 26 of each month")
+
+        func record(_ t: UInt32, _ flags: BatteryHistoryRecord.Flags) -> BatteryHistoryRecord {
+            var r = BatteryHistoryRecord(time: t, percent: 80); r.flags = flags; return r
+        }
+        let t0: UInt32 = 1_000_000
+        let records = [record(t0, [.external]), record(t0 + 60, [.external]), record(t0 + 120, [.external, .charging]),
+                       record(t0 + 180, [.external, .charging]), record(t0 + 600, []), record(t0 + 660, [])]
+        let segments = BatteryStateSegment.segments(records, from: TimeInterval(t0), to: TimeInterval(t0 + 3600))
+        check(segments.map(\.state) == [.pluggedIdle, .charging, .onBattery], "States merge per run")
+        check(segments[0].end.timeIntervalSince1970 == TimeInterval(t0 + 120), "A segment runs until the next state")
+        check(segments[1].end.timeIntervalSince1970 == TimeInterval(t0 + 240), "A gap ends a segment after its last minute")
+        check(segments[2].start.timeIntervalSince1970 == TimeInterval(t0 + 600), "The gap stays empty")
+        check(BatteryStateSegment.segments(records, from: TimeInterval(t0 + 5000), to: TimeInterval(t0 + 6000)).isEmpty,
+              "No samples in range, no segments")
+
+        let bucket = { (t: Double, v: Double) in
+            BatteryHistoryBucket(start: Date(timeIntervalSince1970: t), end: Date(timeIntervalSince1970: t), low: v, high: v, mean: v, count: 1)
+        }
+        let series = ChartSeries(id: "x", name: "x", color: .clear, runs: [[bucket(0, 10), bucket(60, 20)], [bucket(600, 30)]])
+        check(series.value(at: Date(timeIntervalSince1970: 50), slot: 60) == 20, "The crosshair reads the nearest sample")
+        check(series.value(at: Date(timeIntervalSince1970: 300), slot: 60) == nil, "The crosshair reads nothing inside a gap")
+        check(series.value(at: Date(timeIntervalSince1970: 620), slot: 60) == 30 && series.latest?.mean == 30, "Latest is the newest bucket")
+    }
+
+    @MainActor static func checkBatteryHistory() {
+        typealias Record = BatteryHistoryRecord
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("omnistats-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? files.removeItem(at: root) }
+        func folder(_ name: String) -> URL { root.appendingPathComponent(name, isDirectory: true) }
+        func size(_ url: URL) -> Int { ((try? files.attributesOfItem(atPath: url.path))?[.size] as? Int) ?? -1 }
+        func at(_ t: TimeInterval) -> Date { Date(timeIntervalSince1970: t) }
+        let base: TimeInterval = 1_790_000_000
+        func sample(_ t: TimeInterval, percent: UInt8 = 60, flags: Record.Flags = [.external, .charging, .telemetry],
+                    current: Int16 = 2000, powerIn: Int32 = 30000) -> Record {
+            Record(time: UInt32(t), percent: percent, flags: flags, temperature: 3000, rawCurrent: 4000, rawMax: 8000,
+                   voltage: 12500, current: current, systemPowerIn: powerIn, systemLoad: max(0, powerIn - 10000), batteryPower: 10000)
+        }
+
+        let reading: [String: Any] = [
+            "UpdateTime": Int(base) - 10, "CurrentCapacity": 72, "MaxCapacity": 100,
+            "AppleRawCurrentCapacity": 5800, "AppleRawMaxCapacity": 8100, "Voltage": 12600,
+            "InstantAmperage": NSNumber(value: UInt64(bitPattern: -1500)), "Temperature": 3125,
+            "ExternalConnected": false, "IsCharging": false, "FullyCharged": false,
+            "PowerTelemetryData": ["SystemPowerIn": 0, "SystemLoad": 18900,
+                                   "BatteryPower": NSNumber(value: UInt64(bitPattern: -18900))] as [String: Any],
+        ]
+        guard let decoded = Record(registry: reading, now: base) else { fatalError("A full reading must decode") }
+        check(decoded.time == UInt32(base) - 10 && decoded.percent == 72 && decoded.flags == [.telemetry],
+              "History records keep the gauge's UpdateTime and state")
+        check(decoded.current == -1500 && decoded.batteryPower == -18900 && decoded.systemLoad == 18900 && decoded.rawMax == 8100,
+              "Two's-complement current and battery power stay negative")
+        check(decoded.value(.current) == -1.5 && decoded.value(.temperature) == 31.25 && decoded.value(.voltage) == 12.6
+              && decoded.value(.batteryPower) == -18.9 && decoded.value(.rawCurrent) == 5800, "Chart fields use display units")
+        var odd = reading
+        odd["UpdateTime"] = 12345; odd["Temperature"] = 99999; odd["PowerTelemetryData"] = nil
+        let fallback = Record(registry: odd, now: base)
+        check(fallback?.time == UInt32(base) && fallback?.value(.temperature) == nil && fallback?.value(.systemPowerIn) == nil,
+              "Implausible stamps and temperatures and missing telemetry are unavailable, not zero")
+        check(Record(registry: ["MaxCapacity": 100], now: base) == nil
+              && Record(registry: ["CurrentCapacity": 50, "MaxCapacity": 0], now: base) == nil, "No record without a charge reading")
+
+        var extreme = decoded
+        extreme.temperature = Record.noTemperature; extreme.current = .min; extreme.batteryPower = .min
+        extreme.systemPowerIn = .max; extreme.rawCurrent = .max; extreme.flags = [.external, .charging, .fullyCharged, .telemetry]
+        for record in [decoded, extreme] {
+            let bytes = PackedFile.encode([record], header: false)
+            check(bytes.count == Record.size && bytes.withUnsafeBytes { Record(packed: $0, at: 0) } == record,
+                  "Records survive encode and decode")
+        }
+        check(MemoryLayout<Record>.stride == Record.size, "A record takes its 28 packed bytes in memory too")
+        let header = PackedFile.encode([decoded], header: true)
+        check(Array(header.prefix(8)) == Array("OSBH".utf8) + [1, 0, 28, 0]
+              && Array(header[8..<12]) == withUnsafeBytes(of: decoded.time.littleEndian, Array.init), "Little-endian header and records")
+        let health = BatteryHealthSnapshot(day: 20261030, nominalCapacity: 8376, rawMaxCapacity: 8132, designCapacity: 8579,
+                                           cycleCount: 41, maximumCapacityPercent: 96)
+        let healthBytes = PackedFile.encode([health], header: false)
+        check(healthBytes.count == 13 && healthBytes.withUnsafeBytes { BatteryHealthSnapshot(packed: $0, at: 0) } == health,
+              "Snapshots survive encode and decode")
+        check(abs((health.health ?? 0) - 8376.0 / 8579.0 * 100) < 1e-9 && BatteryHealthSnapshot(registry: ["CycleCount": 4], day: 1) == nil
+              && health.date.map { BatteryHealthSnapshot.day(for: $0.timeIntervalSince1970) } == 20261030, "Snapshot health and dates")
+
+        // Batched appends, reload and de-duplication.
+        let batch = BatteryHistoryStore(directory: folder("batch"))
+        batch.load(now: base)
+        check(batch.records.isEmpty && !files.fileExists(atPath: folder("batch").path), "An empty history writes nothing")
+        let day = (0..<1440).map { sample(base + Double($0) * 60) }
+        for record in day.prefix(10) { check(batch.append(record), "New minutes are kept") }
+        batch.flush(now: base + 600)
+        check(size(batch.historyURL) == 8 + 10 * 28, "The first flush writes the header and the batch")
+        for record in day.dropFirst(10) { batch.append(record) }
+        batch.flush(now: base + 86400)
+        let bytesPerDay = size(batch.historyURL) - 8
+        check(bytesPerDay == 1440 * 28, "Later flushes append only new records")
+        let reloaded = BatteryHistoryStore(directory: folder("batch"))
+        reloaded.load(now: base + 86400)
+        check(reloaded.records == day, "Appended batches reload intact")
+        let last = TimeInterval(day[1439].time)
+        check(!reloaded.append(day[1439]), "A repeated UpdateTime is a duplicate")
+        check(!reloaded.append(sample(last + 30)), "A reading within 45 s in the same state is a duplicate")
+        check(reloaded.append(sample(last + 30, flags: [.telemetry])), "Unplugging is recorded at once")
+        check(!reloaded.append(sample(last - 600)), "Slightly older readings are dropped")
+        check(reloaded.append(sample(last - 7200)) && reloaded.records.count == 1320 && reloaded.records.last == sample(last - 7200),
+              "A clock set back by hours drops the records it overtakes")
+        reloaded.flush(now: base + 86400)
+        check(PackedFile.load(reloaded.historyURL, as: Record.self).records == reloaded.records, "The drop is rewritten to disk")
+
+        // Retention: 30 days, applied on load and by the daily compaction.
+        let aging = BatteryHistoryStore(directory: folder("aging"))
+        aging.load(now: base)
+        for hour in 0..<(40 * 24) { aging.append(sample(base + Double(hour) * 3600)) }
+        aging.append(sample(base + 50 * 86400))
+        aging.flush(now: base)
+        let compacted = BatteryHistoryStore(directory: folder("aging"))
+        compacted.load(now: base + 40 * 86400)
+        check(compacted.records.count == 720 && compacted.records.first?.time == UInt32(base) + 240 * 3600
+              && size(compacted.historyURL) == 8 + 720 * 28, "Launch drops records past 30 days or in the future and rewrites")
+        compacted.compact(now: base + 41 * 86400)
+        check(compacted.records.count == 696 && PackedFile.load(compacted.historyURL, as: Record.self).records == compacted.records,
+              "The daily compaction trims again")
+
+        // Damaged files are moved aside, never trusted.
+        let valid = Array(PackedFile.encode(Array(day.prefix(3)), header: true))
+        let damaged: [(String, [UInt8])] = [
+            ("garbage", Array("not a history".utf8)), ("empty", []), ("magic", [0x58] + valid[1...]),
+            ("version", Array(valid[0..<4]) + [2, 0] + valid[6...]), ("record-size", Array(valid[0..<6]) + [32, 0] + valid[8...]),
+        ]
+        for (name, bytes) in damaged {
+            let store = BatteryHistoryStore(directory: folder(name))
+            try? files.createDirectory(at: folder(name), withIntermediateDirectories: true)
+            try? Data(bytes).write(to: store.historyURL)
+            try? Data(bytes).write(to: store.healthURL)
+            store.load(now: base)
+            check(store.records.isEmpty && store.snapshots.isEmpty && files.fileExists(atPath: store.historyURL.path + ".corrupt")
+                  && files.fileExists(atPath: store.healthURL.path + ".corrupt"), "A \(name) file is moved aside")
+            store.append(sample(base)); store.flush(now: base)
+            let fresh = PackedFile.load(store.historyURL, as: Record.self)
+            check(fresh.records == [sample(base)] && !fresh.damaged, "A fresh file replaces a \(name) one")
+        }
+        let torn = BatteryHistoryStore(directory: folder("torn"))
+        try? files.createDirectory(at: folder("torn"), withIntermediateDirectories: true)
+        try? Data(valid + [1, 2, 3]).write(to: torn.historyURL)
+        torn.load(now: base)
+        check(torn.records == Array(day.prefix(3)) && size(torn.historyURL) == valid.count
+              && !files.fileExists(atPath: torn.historyURL.path + ".corrupt"), "A torn append keeps whole records and is trimmed")
+
+        // Downsampling keeps extremes within N buckets.
+        var profile = day
+        profile[700].systemPowerIn = 140_000; profile[900].systemPowerIn = 1_000
+        let dayRuns = BatteryHistoryBucket.series(profile, .systemPowerIn, from: base, to: base + 86400, maxPoints: 100)
+        let buckets = dayRuns.flatMap { $0 }
+        check(dayRuns.count == 1 && buckets.count == 100, "A full day downsamples to N buckets")
+        check(buckets.map(\.high).max() == 140 && buckets.map(\.low).min() == 1 && buckets.reduce(0) { $0 + $1.count } == 1440,
+              "Buckets keep every sample and its extremes")
+        check(buckets.allSatisfy { $0.low <= $0.mean && $0.mean <= $0.high && $0.start <= $0.end }, "Means lie within each bucket")
+        check(BatteryHistoryBucket.series(profile, .percent, from: base, to: base + 6000, maxPoints: 100).flatMap { $0 }.count == 100,
+              "A sample exactly at the end stays within N")
+        let fine = BatteryHistoryBucket.series(profile, .percent, from: base, to: base + 3540, maxPoints: 1000)
+        check(fine.count == 1 && fine[0].count == 60 && fine[0].allSatisfy { $0.count == 1 }, "Short ranges keep every minute")
+        check(BatteryHistoryBucket.series(profile, .percent, from: base, to: base, maxPoints: 10).isEmpty
+              && BatteryHistoryBucket.series(profile, .percent, from: base, to: base + 60, maxPoints: 0).isEmpty, "Empty ranges")
+
+        // Gaps stay gaps.
+        var holes = Array(day.prefix(120))
+        holes.remove(at: 90)
+        holes.removeSubrange(30..<60)
+        let gapRuns = BatteryHistoryBucket.series(holes, .percent, from: base, to: base + 7200, maxPoints: 1000)
+        check(gapRuns.count == 3 && gapRuns[0].last?.end == at(base + 29 * 60) && gapRuns[1].first?.start == at(base + 60 * 60)
+              && gapRuns[1].last?.end == at(base + 89 * 60) && gapRuns[2].first?.start == at(base + 91 * 60),
+              "Sleep and a single missing minute are gaps, never bridged")
+        var untelemetered = Array(day.prefix(60))
+        for i in 20..<40 { untelemetered[i].flags = [.external, .charging] }
+        check(BatteryHistoryBucket.series(untelemetered, .systemPowerIn, from: base, to: base + 3600, maxPoints: 1000).count == 2
+              && BatteryHistoryBucket.series(untelemetered, .percent, from: base, to: base + 3600, maxPoints: 1000).count == 1,
+              "Missing telemetry is a gap in the power series only")
+        let coarse = BatteryHistoryBucket.series(holes, .percent, from: base, to: base + 30 * 86400, maxPoints: 30)
+        check(coarse.count == 1 && coarse[0].count == 1, "Gaps narrower than a bucket fall inside it at coarse zoom")
+
+        // Today's statistics: 1 h charging, a 30 min gap, 1 h held at 80 %, 1 h on battery.
+        var log: [Record] = []
+        for m in 0...60 { log.append(sample(base + Double(m) * 60, percent: m < 30 ? 98 : 99)) }
+        for m in 90..<150 { log.append(sample(base + Double(m) * 60, percent: 80, flags: [.external, .telemetry], current: 0, powerIn: 12000)) }
+        for m in 150...210 { log.append(sample(base + Double(m) * 60, percent: 79, flags: [.telemetry], current: -1500, powerIn: 0)) }
+        let stats = BatteryDayStats(log, from: base, to: base + 210 * 60, limit: 80)
+        check(abs(stats.wallEnergy - 41.9) < 1e-9, "Wall energy integrates SystemPowerIn and skips the gap")
+        check(stats.heldAtLimit == 3600 && stats.onBattery == 3600 && stats.full == 1800 && stats.covered == 10800,
+              "Time held at the limit, on battery and full")
+        let clipped = BatteryDayStats(log, from: base + 15, to: base + 210 * 60, limit: 80)
+        check(abs(clipped.wallEnergy - 41.775) < 1e-9 && clipped.covered == 10785, "An interval across midnight counts only its share")
+        check(BatteryDayStats(log, from: base, to: base + 210 * 60, limit: 85).heldAtLimit == 0, "Held time needs the given limit")
+
+        // Estimates.
+        check(abs((BatteryEstimate.timeToTarget(85, rawCurrent: 4000, rawMax: 8000, current: 2800) ?? 0) - 3600) < 1e-6,
+              "Time to the charge limit")
+        check([BatteryEstimate.timeToTarget(85, rawCurrent: 4000, rawMax: 8000, current: -2000),
+               BatteryEstimate.timeToTarget(85, rawCurrent: 4000, rawMax: 8000, current: 0),
+               BatteryEstimate.timeToTarget(85, rawCurrent: 4000, rawMax: 8000, current: 20),
+               BatteryEstimate.timeToTarget(50, rawCurrent: 4000, rawMax: 8000, current: 2800),
+               BatteryEstimate.timeToTarget(85, rawCurrent: 4000, rawMax: 0, current: 2800),
+               BatteryEstimate.timeToTarget(101, rawCurrent: 4000, rawMax: 8000, current: 2800)].allSatisfy { $0 == nil },
+              "No charge estimate while discharging, idle, at the target or without capacity")
+        check(BatteryEstimate.timeToEmpty(rawCurrent: 4000, current: -2000) == 7200, "Time to empty")
+        check([BatteryEstimate.timeToEmpty(rawCurrent: 4000, current: 2000), BatteryEstimate.timeToEmpty(rawCurrent: 4000, current: 0),
+               BatteryEstimate.timeToEmpty(rawCurrent: 4000, current: -20), BatteryEstimate.timeToEmpty(rawCurrent: 0, current: -2000)]
+              .allSatisfy { $0 == nil }, "No time to empty while charging, idle or empty")
+        let charge = [sample(base, current: 1000), sample(base + 60, current: 2000), sample(base + 120, current: 3000)]
+        check(BatteryEstimate.recentCurrent(charge, now: base + 130) == 2000, "Recent average current")
+        check(BatteryEstimate.recentCurrent(charge, now: base + 400) == nil, "A stale reading gives no average")
+        check(BatteryEstimate.recentCurrent(Array(charge.prefix(2)), now: base + 70) == nil, "Too few readings give no average")
+        check(BatteryEstimate.recentCurrent([sample(base - 60, flags: [.telemetry], current: -3000)] + charge, now: base + 130) == 2000
+              && BatteryEstimate.recentCurrent([sample(base - 600, current: 9000)] + charge, now: base + 130) == 2000,
+              "Only the current power state since the last gap counts")
+        check(BatteryEstimate.recentCurrent(day, now: last) == 2000 && BatteryEstimate.recentCurrent([], now: base) == nil,
+              "The window bounds the average")
+
+        // The recorder, with an injected gauge and clock.
+        var clock = Calendar.current.startOfDay(for: at(base)).timeIntervalSince1970 + 12 * 3600
+        var gauge = reading.merging([
+            "UpdateTime": Int(clock) - 5, "ExternalConnected": true, "IsCharging": true, "InstantAmperage": 2800,
+            "AppleRawCurrentCapacity": 4000, "AppleRawMaxCapacity": 8000, "NominalChargeCapacity": 8376,
+            "DesignCapacity": 8579, "CycleCount": 41,
+            "PowerTelemetryData": ["SystemPowerIn": 35000, "SystemLoad": 25000, "BatteryPower": 10000] as [String: Any],
+        ]) { $1 }
+        func tick(_ seconds: TimeInterval) { clock += seconds; gauge["UpdateTime"] = Int(clock) - 5 }
+        var fullReads = 0, quickReads = 0
+        let historyFile = folder("recorder").appendingPathComponent("battery-history.bin")
+        let recorder = BatteryHistory(isPresent: true, directory: folder("recorder"), read: { keys in
+            if keys == ["UpdateTime"] { quickReads += 1 } else if keys == Record.registryKeys { fullReads += 1 }
+            return gauge
+        }, clock: { clock })
+        recorder.start()
+        recorder.recordNow()
+        wait { recorder.latest != nil }
+        check(fullReads == 1 && quickReads == 1 && recorder.latest?.time == UInt32(clock) - 5 && recorder.snapshots.count == 1,
+              "Launch records at once; a repeated message reads one key and records nothing")
+        for _ in 1...9 { tick(60); recorder.recordNow() }
+        check(fullReads == 10 && !files.fileExists(atPath: historyFile.path), "Samples batch in memory for ten minutes")
+        tick(60); recorder.recordNow()
+        check(size(historyFile) == 8 + 11 * 28, "The ten-minute flush appends the batch")
+        check(abs((recorder.timeToReach(85) ?? 0) - 3600) < 1e-6 && recorder.timeToEmpty() == nil, "Live estimates use recent samples")
+        let today = recorder.todayStats(limit: 80)
+        check(abs(today.wallEnergy - 35.0 * 600 / 3600) < 1e-9 && today.covered == 600 && today.onBattery == 0, "Today's stats")
+        let quick = quickReads
+        recorder.runWatchdog()
+        check(fullReads == 11 && quickReads == quick, "The watchdog stays idle while samples are fresh")
+        clock += 200; recorder.runWatchdog()
+        check(fullReads == 11 && quickReads == quick + 1, "A stale history makes the watchdog check the gauge")
+        gauge["UpdateTime"] = Int(clock) - 5; recorder.runWatchdog()
+        check(fullReads == 12 && recorder.timeToReach(85) == nil, "It records what the messages missed; a gap resets the average")
+        tick(86400); gauge["CycleCount"] = 42; recorder.recordNow()
+        check(recorder.snapshots.count == 2 && recorder.snapshots.last?.cycleCount == 42, "One snapshot per day")
+        check(size(historyFile) == 8 + 13 * 28, "The daily compaction keeps recent records and writes pending ones")
+        tick(60); recorder.recordNow(); recorder.flush()
+        check(size(historyFile) == 8 + 14 * 28, "Termination writes the rest")
+        let relaunched = BatteryHistory(isPresent: true, directory: folder("recorder"), read: { _ in gauge }, clock: { clock })
+        relaunched.start(); relaunched.recordNow()
+        wait { relaunched.latest != nil }
+        let stored = relaunched.series(.percent, from: at(clock - 3 * 86400), to: at(clock), maxPoints: 10_000).flatMap { $0 }
+        check(stored.reduce(0) { $0 + $1.count } == 14 && relaunched.snapshots.count == 2 && relaunched.latest?.time == UInt32(clock) - 5,
+              "A relaunch keeps history and snapshots without duplicating the current reading")
+
+        // No battery: nothing is read, scheduled or written.
+        var desktopReads = 0
+        let desktop = BatteryHistory(isPresent: false, directory: folder("desktop"), read: { _ in desktopReads += 1; return gauge },
+                                     clock: { clock })
+        desktop.start(); desktop.recordNow(); desktop.runWatchdog(); desktop.flush()
+        check(desktopReads == 0 && !files.fileExists(atPath: folder("desktop").path) && desktop.latest == nil && desktop.snapshots.isEmpty
+              && desktop.series(.percent, from: at(0), to: at(clock), maxPoints: 100).isEmpty
+              && desktop.todayStats(limit: 80) == BatteryDayStats() && desktop.timeToEmpty() == nil,
+              "Macs without a battery record and write nothing")
+        let unreadable = BatteryHistory(isPresent: true, directory: folder("unreadable"), read: { _ in nil }, clock: { clock })
+        unreadable.start(); unreadable.recordNow(); unreadable.flush()
+        check(!files.fileExists(atPath: folder("unreadable").path) && unreadable.snapshots.isEmpty, "An unreadable gauge writes nothing")
+
+        // Footprint and cost.
+        let month = BatteryHistoryStore(directory: folder("month"))
+        month.load(now: base)
+        for m in 0..<(30 * 1440) { month.append(sample(base + Double(m) * 60)) }
+        month.flush(now: base)
+        let monthReloaded = BatteryHistoryStore(directory: folder("month"))
+        monthReloaded.load(now: base + 30 * 86400 - 60)
+        let count = monthReloaded.records.count, stride = MemoryLayout<Record>.stride, capacity = monthReloaded.records.capacity
+        check(count == 43_200, "30 days of minutes stay within retention")
+        print("Battery history footprint (measured): \(count) records × \(stride) B = \(count * stride) B; array capacity \(capacity) "
+              + "= \(capacity * stride) B; file \(size(monthReloaded.historyURL)) B, \(bytesPerDay) B per day")
+        if BatteryReader.isPresent {
+            let reader = BatteryReader()
+            var full: [UInt64] = [], quick: [UInt64] = [], live: Record?
+            for _ in 0..<200 {
+                let a = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+                if let registry = reader.read(Record.registryKeys), let record = Record(registry: registry, now: Date().timeIntervalSince1970) {
+                    live = record; _ = PackedFile.encode([record], header: false)
+                }
+                let b = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+                _ = reader.read(["UpdateTime"])
+                let c = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+                full.append(b - a); quick.append(c - b)
+            }
+            func median(_ values: [UInt64]) -> Double { Double(values.sorted()[values.count / 2]) / 1000 }
+            check((live?.rawMax ?? 0) > 0 && (live?.percent ?? 101) <= 100, "The live gauge decodes into a history record")
+            print(String(format: "Battery history cost (measured, median of 200): %.1f µs CPU per sample+encode, %.1f µs per repeated message",
+                         median(full), median(quick)))
+        } else {
+            print("Battery history cost: no battery on this Mac, live read skipped")
+        }
     }
 }

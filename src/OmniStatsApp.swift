@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let activity = ActivityState()
     let resources = ResourceSampler()
     let battery = BatterySampler()
+    let batteryHistory = BatteryHistory()   // records on its own; a no-op without a battery
     lazy var charge = ChargeController(monitor: monitor)
     lazy var engine = Engine(monitor: monitor, store: store)
     private lazy var sampling = SamplingCoordinator(monitor: monitor, net: net, proc: proc,
@@ -41,13 +42,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let settings = SettingsWindowController(mon: monitor, store: store, engine: engine, updater: updater,
                                                 activity: activity, battery: battery, charge: charge, menuBar: menuBar,
-                                                uninstaller: AppUninstaller())
+                                                uninstaller: AppUninstaller(), history: batteryHistory.isPresent ? batteryHistory : nil)
         settingsController = settings
         statusController = StatusItemController(
             mon: monitor, store: store, engine: engine, net: net, proc: proc, netProc: netProc,
             activity: activity, resources: resources, battery: battery, charge: charge,
-            onOpenSettings: { settings.show() })
+            history: batteryHistory.isPresent ? batteryHistory : nil, onOpenSettings: { settings.show() })
         _ = sampling
+        batteryHistory.start()
         scheduleRunner = ChargeScheduleRunner(store: store) { [weak self] command in self?.charge.perform(command) }
         _ = menuBar   // after OmniStats' own icon, which anchors the menu-bar controls
 
@@ -76,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ n: Notification) {
         store.flush()
+        batteryHistory.flush()
         monitor.shutdown()
     }
 
@@ -83,7 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyLaunchArguments() {
         let args = ProcessInfo.processInfo.arguments
         if let i = args.firstIndex(of: "--theme"), i + 1 < args.count {
-            store.config.appearance = (args[i+1] == "light") ? .light : .dark
+            store.config.appearance = AppearanceMode(rawValue: args[i+1]) ?? .dark
         }
         if let i = args.firstIndex(of: "--mode"), i + 1 < args.count,
            let m = FanMode(rawValue: args[i+1]) {

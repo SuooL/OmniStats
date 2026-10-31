@@ -16,26 +16,30 @@ struct AppsPane: View {
     enum Mode: Hashable { case installed, leftovers }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L.t("un.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text(L.t("un.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            }
+        // The page fills the window: the list and the details scroll on their own.
+        VStack(alignment: .leading, spacing: Theme.Space.l) {
+            PageHeader(title: L.t("un.title"), subtitle: L.t("un.subtitle"))
             Picker("", selection: $mode) {
                 Text(L.t("un.mode.installed")).tag(Mode.installed)
                 Text(L.t("un.mode.leftovers")).tag(Mode.leftovers)
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 380)
-            if model.fullDiskAccess == false { accessBanner }
-            if mode == .installed {
-                HStack(alignment: .top, spacing: 16) {
-                    appList.frame(width: 240)
-                    details.frame(maxWidth: .infinity, alignment: .topLeading)
+            .pickerStyle(.segmented).labelsHidden().fixedSize().tint(Theme.accent)
+            if model.fullDiskAccess == false {
+                Callout(.warning, message: L.t("un.fdaBanner")) {
+                    Button(L.t("un.openFDA")) { Privacy.openFullDiskAccessSettings() }.secondaryButton()
                 }
+            }
+            if mode == .installed {
+                HStack(alignment: .top, spacing: Theme.Space.l) {
+                    appList.frame(width: 240)
+                    details
+                }
+                .frame(maxHeight: .infinity)
             } else {
                 orphanView
             }
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .onAppear { model.reload() }
         .onChange(of: mode) { _ in model.clearReport() }
         .alert(L.f("un.quitTitle", model.selected?.name ?? ""), isPresented: $confirmQuit) {
@@ -68,20 +72,6 @@ struct AppsPane: View {
         return Text(system > 0 ? L.f("un.confirmBody", items.count, system) : L.f("un.confirmBodyUser", items.count))
     }
 
-    private var accessBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: "lock.shield").foregroundStyle(.orange)
-            Text(L.t("un.fdaBanner")).font(.system(size: 11)).foregroundStyle(Theme.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer()
-            Button(L.t("un.openFDA")) { Privacy.openFullDiskAccessSettings() }
-                .buttonStyle(.bordered).controlSize(.small)
-        }
-        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.35), lineWidth: 1))
-    }
-
     // MARK: Installed apps
 
     private var filtered: [InstalledApp] {
@@ -91,7 +81,7 @@ struct AppsPane: View {
     }
 
     private var appList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
             TextField(L.t("un.search"), text: $query).textFieldStyle(.roundedBorder)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -100,63 +90,73 @@ struct AppsPane: View {
                             HStack(spacing: 8) {
                                 Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
                                     .resizable().frame(width: 20, height: 20)
-                                Text(app.name).font(.system(size: 12)).foregroundStyle(Theme.ink).lineLimit(1)
+                                Text(app.name).font(Theme.Typo.secondary).foregroundStyle(Theme.ink).lineLimit(1)
                                 Spacer(minLength: 0)
                             }
                             .padding(.vertical, 4).padding(.horizontal, 6)
                             .background(model.selected == app ? Theme.accent.opacity(0.16) : .clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-            .frame(height: 440)
+            .frame(maxHeight: .infinity)
+            if filtered.isEmpty && !model.apps.isEmpty { EmptyState(icon: "magnifyingglass", text: L.t("un.noMatch")) }
         }
-        .padding(10)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+        .padding(Theme.Space.m)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .cardBackground()
     }
 
     @ViewBuilder private var details: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
             if let app = model.selected {
-                HStack(spacing: 12) {
+                HStack(spacing: Theme.Space.m) {
                     Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path)).resizable().frame(width: 44, height: 44)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
                             Text(app.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
-                            if let version = app.version { Text(version).font(.system(size: 11)).foregroundStyle(Theme.ink3) }
-                            if app.isAppStore { badge(L.t("un.appStore"), Theme.accent) }
-                            if app.cask != nil { badge("Homebrew", Theme.accent) }
-                            if model.isRunning { badge(L.t("un.running"), .orange) }
+                            if let version = app.version { Text(version).font(Theme.Typo.caption).foregroundStyle(Theme.ink3) }
+                            if app.isAppStore { Badge(text: L.t("un.appStore"), compact: true) }
+                            if app.cask != nil { Badge(text: "Homebrew", compact: true) }
+                            if model.isRunning { Badge(text: L.t("un.running"), tint: Theme.warning, compact: true) }
                         }
-                        Text(app.bundleID).font(.system(size: 11)).foregroundStyle(Theme.ink3).textSelection(.enabled)
+                        Text(app.bundleID).font(Theme.Typo.caption).foregroundStyle(Theme.ink3).textSelection(.enabled)
                     }
                 }
                 if let cask = app.cask { brewHint(cask) }
                 if model.scanning {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); note(L.t("un.scanning")) }
+                    HStack(spacing: Theme.Space.s) { ProgressView().controlSize(.small); Note(L.t("un.scanning")) }
+                    Spacer(minLength: 0)
                 } else {
-                    items
+                    RowDivider()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: Theme.Space.m) {
+                            items
+                            if let report = model.report { reportView(report) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: .infinity)
+                    RowDivider()
                     footer
                 }
-                if let report = model.report { reportView(report) }
             } else {
-                note(L.t("un.empty"))
+                EmptyState(icon: "app.dashed", text: L.t("un.empty"))
             }
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .cardBackground()
     }
 
     // Homebrew keeps its own record of the cask; its zap is the tidy way out.
     private func brewHint(_ cask: String) -> some View {
         let command = "brew uninstall --zap --cask \(cask)"
         return VStack(alignment: .leading, spacing: 6) {
-            note(L.t("un.brewHint"))
+            Note(L.t("un.brewHint"))
             HStack(spacing: 8) {
                 Text(command).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink2).textSelection(.enabled)
                 Spacer(minLength: 6)
@@ -165,16 +165,16 @@ struct AppsPane: View {
                     NSPasteboard.general.setString(command, forType: .string)
                     copiedCask = cask
                 }
-                .buttonStyle(.bordered).controlSize(.small)
+                .secondaryButton()
             }
         }
-        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.line.opacity(0.35)).clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(Theme.Space.m).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.well, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
     }
 
     private var items: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if model.leftovers.count <= 1 { note(L.t("un.nothing")) }
+            if model.leftovers.count <= 1 { Note(L.t("un.nothing")) }
             ForEach(model.leftovers) { item in
                 itemRow(item, size: model.sizes[item.id], disabled: item.kind == .app,
                         isOn: Binding(get: { !model.excluded.contains(item.id) }, set: { included in
@@ -190,10 +190,10 @@ struct AppsPane: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(L.t("un.kind.\(item.kind.rawValue)")).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.ink2)
-                    if item.system { badge(L.t("un.admin"), Theme.ink3) }
-                    if item.byName { badge(L.t("un.byName"), Theme.ink3).help(L.t("un.byNameHelp")) }
-                    if item.fromCask { badge("Homebrew", Theme.ink3).help(L.t("un.fromCaskHelp")) }
-                    if item.protected && model.fullDiskAccess == false { badge(L.t("un.fdaBadge"), .orange) }
+                    if item.system { Badge(text: L.t("un.admin"), tint: Theme.ink3, compact: true) }
+                    if item.byName { Badge(text: L.t("un.byName"), tint: Theme.ink3, compact: true).help(L.t("un.byNameHelp")) }
+                    if item.fromCask { Badge(text: "Homebrew", tint: Theme.ink3, compact: true).help(L.t("un.fromCaskHelp")) }
+                    if item.protected && model.fullDiskAccess == false { Badge(text: L.t("un.fdaBadge"), tint: Theme.warning, compact: true) }
                 }
                 Text((item.url.path as NSString).abbreviatingWithTildeInPath)
                     .font(.system(size: 11)).foregroundStyle(Theme.ink3).lineLimit(1).truncationMode(.middle)
@@ -208,19 +208,19 @@ struct AppsPane: View {
         let chosen = model.chosen
         let total = chosen.compactMap { model.sizes[$0.id] }.reduce(0, +)
         return HStack {
-            Text(L.f("un.total", chosen.count, Self.bytes(total))).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            Text(L.f("un.total", chosen.count, Self.bytes(total))).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
             Spacer()
             if model.working { ProgressView().controlSize(.small) }
             Button(L.t("un.resetButton")) {
                 if model.isRunning { confirmQuit = true } else { confirmReset = true }
             }
-            .buttonStyle(.bordered).controlSize(.small)
+            .secondaryButton()
             .disabled(model.working || model.resettable.isEmpty)
             .help(L.t("un.resetHelp"))
             Button(L.t("un.remove")) {
                 if model.isRunning { confirmQuit = true } else { confirmRemoval = true }
             }
-            .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
+            .buttonStyle(.borderedProminent).tint(Theme.danger).controlSize(.small)
             .disabled(model.working || chosen.isEmpty)
         }
     }
@@ -228,33 +228,39 @@ struct AppsPane: View {
     // MARK: Leftovers of deleted apps
 
     private var orphanView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
-                note(L.t("un.orphanIntro"))
-                Spacer(minLength: 10)
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            HStack(alignment: .top, spacing: Theme.Space.m) {
+                Note(L.t("un.orphanIntro"))
+                Spacer(minLength: Theme.Space.m)
                 if model.orphanScanning { ProgressView().controlSize(.small) }
                 Button(model.orphansScanned ? L.t("un.rescan") : L.t("un.scan")) { model.scanOrphans() }
-                    .buttonStyle(.bordered).controlSize(.small)
+                    .secondaryButton()
                     .disabled(model.orphanScanning || model.working)
             }
             if model.orphansScanned && !model.orphanScanning {
                 if model.orphans.isEmpty {
-                    note(L.t("un.orphanNone"))
+                    EmptyState(icon: "checkmark.circle", text: L.t("un.orphanNone"))
                 } else {
+                    RowDivider()
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
                             ForEach(model.orphans) { group in orphanGroup(group) }
                         }
                     }
-                    .frame(height: 380)
+                    .frame(maxHeight: .infinity)
+                    RowDivider()
                     orphanFooter
                 }
+            } else if !model.orphanScanning {
+                EmptyState(icon: "sparkle.magnifyingglass", text: L.t("un.orphanHint"))
+            } else {
+                Spacer(minLength: 0)
             }
             if let report = model.report { reportView(report) }
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
+        .padding(Theme.Space.l)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .cardBackground()
     }
 
     private func orphanGroup(_ group: OrphanGroup) -> some View {
@@ -266,7 +272,7 @@ struct AppsPane: View {
                     if on { model.orphanSelection.formUnion(ids) } else { model.orphanSelection.subtract(ids) }
                 }))
                 .toggleStyle(.checkbox).labelsHidden()
-                Text(group.bundleID).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink).textSelection(.enabled)
+                Text(group.bundleID).font(Theme.Typo.secondary.weight(.semibold)).foregroundStyle(Theme.ink).textSelection(.enabled)
                 Spacer(minLength: 6)
                 Text(Self.bytes(total)).font(Theme.telemetry(11)).foregroundStyle(Theme.ink2)
             }
@@ -284,11 +290,11 @@ struct AppsPane: View {
         let chosen = model.chosenOrphans
         let total = chosen.compactMap { model.orphanSizes[$0.id] }.reduce(0, +)
         return HStack {
-            Text(L.f("un.total", chosen.count, Self.bytes(total))).font(.system(size: 11)).foregroundStyle(Theme.ink3)
+            Text(L.f("un.total", chosen.count, Self.bytes(total))).font(Theme.Typo.caption).foregroundStyle(Theme.ink3)
             Spacer()
             if model.working { ProgressView().controlSize(.small) }
             Button(L.t("un.remove")) { confirmOrphans = true }
-                .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
+                .buttonStyle(.borderedProminent).tint(Theme.danger).controlSize(.small)
                 .disabled(model.working || chosen.isEmpty)
         }
     }
@@ -298,12 +304,12 @@ struct AppsPane: View {
     private func reportView(_ report: UninstallReport) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider().overlay(Theme.line)
-            Text(L.f("un.done", report.moved.count)).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink)
+            Label(L.f("un.done", report.moved.count), systemImage: "checkmark.circle.fill")
+                .font(Theme.Typo.secondary.weight(.medium)).foregroundStyle(Theme.ink)
             if !report.skipped.isEmpty {
-                Text(L.f("un.partial", report.skipped.count)).font(.system(size: 11)).foregroundStyle(.orange)
+                Callout(.warning, message: L.f("un.partial", report.skipped.count))
                 ForEach(report.skipped, id: \.path) { skip in
-                    Text("\((skip.path as NSString).abbreviatingWithTildeInPath) — \(skip.reason)")
-                        .font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
+                    Note("\((skip.path as NSString).abbreviatingWithTildeInPath) — \(skip.reason)")
                 }
             }
             if let log = report.logURL {
@@ -318,12 +324,4 @@ struct AppsPane: View {
         return formatter
     }()
     private static func bytes(_ value: Int64) -> String { byteFormatter.string(fromByteCount: value) }
-    private func badge(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 9, weight: .semibold)).foregroundStyle(color)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .overlay(Capsule().stroke(color.opacity(0.6), lineWidth: 1))
-    }
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-    }
 }

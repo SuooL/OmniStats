@@ -1,11 +1,6 @@
 import SwiftUI
 import AppKit
 
-private func watts(_ value: Double) -> String { String(format: "%.1f W", value) }
-private func signedWatts(_ value: Double) -> String {
-    abs(value) < 0.05 ? "0.0 W" : String(format: "%+.1f W", value)
-}
-
 extension BatterySnapshot.State {
     var title: String {
         switch self {
@@ -47,6 +42,7 @@ private struct ChargeBar: View {
 struct BatteryPanelSection: View {
     @ObservedObject var sampler: BatterySampler
     @ObservedObject var charge: ChargeController
+    var history: BatteryHistory?
 
     var body: some View {
         let battery = sampler.snapshot
@@ -75,8 +71,23 @@ struct BatteryPanelSection: View {
             }
             ChargeBar(fraction: Double(battery?.percent ?? 0) / 100, color: color).frame(height: 3)
             flow(battery)
+            if let history { trend(history) }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    // The last two hours of charge. Its row is always there when history is, so
+    // the panel's height doesn't change as samples arrive.
+    private func trend(_ history: BatteryHistory) -> some View {
+        let now = Date(), from = now.addingTimeInterval(-7200)
+        let runs = history.series(.percent, from: from, to: now, maxPoints: 120)
+        return HStack(spacing: 6) {
+            Text(L.t("m.batteryTrend")).font(Theme.Typo.micro).foregroundStyle(Theme.ink3)
+            TimeSeriesChart(series: [ChartSeries(id: "level", name: "", color: Theme.accent, runs: runs)],
+                            from: from, to: now, domain: 0...100, ticks: [], area: true, compact: true,
+                            format: { "\(Int($0))%" }, hover: .constant(nil))
+        }
+        .frame(height: 18)
     }
 
     private func flow(_ battery: BatterySnapshot?) -> some View {
@@ -102,125 +113,58 @@ struct BatteryPanelSection: View {
     }
 }
 
-// Settings pane: the same readings in full, plus capacity and cycle health.
+// Settings pane: status and history first, controls below in two columns.
 struct BatteryPane: View {
     @ObservedObject var sampler: BatterySampler
     @ObservedObject var store: ConfigStore
     let mon: Monitor
-    let charge: ChargeController
+    @ObservedObject var charge: ChargeController
+    var history: BatteryHistory?
+    @StateObject private var model = BatteryHistoryModel()
+    @State private var range = BatteryPane.initialRange
+    static var initialRange = HistoryRange.hours24   // screenshots may pick another
+
+    private var limit: ChargeLimitSettings? {
+        guard let status = charge.status, status.settings.enabled, status.conflict == nil, status.backend != .none else { return nil }
+        return status.settings
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(L.t("b.title")).font(.system(size: 21, weight: .bold)).foregroundStyle(Theme.ink)
-                Text(L.t("b.subtitle")).font(.system(size: 12)).foregroundStyle(Theme.ink3)
-            }
+        VStack(alignment: .leading, spacing: Theme.Space.xl) {
+            PageHeader(title: L.t("b.title"), subtitle: L.t("b.subtitle"))
             if let battery = sampler.snapshot {
-                status(battery)
-                ChargeControlCard(control: charge, mon: mon, external: battery.externalPower,
-                                  fahrenheit: store.config.fahrenheit)
-                DischargeCard(control: charge)
-                ChargeScheduleCard(store: store)
-                HStack(alignment: .top, spacing: 18) {
-                    flow(battery)
-                    health(battery)
+                BatteryStatusCard(battery: battery, status: charge.status, history: history, fahrenheit: store.config.fahrenheit)
+                if history != nil {
+                    BatteryHistoryCard(model: model, range: $range,
+                                       limit: limit.flatMap { $0.limit < 100 ? $0.limit : nil },
+                                       heatLimit: limit.flatMap { $0.heatProtect ? $0.heatLimit : nil },
+                                       fahrenheit: store.config.fahrenheit)
                 }
-                .frame(maxWidth: 640)
+                Columns {
+                    ChargeControlCard(control: charge, mon: mon, external: battery.externalPower,
+                                      fahrenheit: store.config.fahrenheit)
+                    DischargeCard(control: charge)
+                } right: {
+                    BatteryHealthCard(battery: battery, snapshots: model.snapshots)
+                    if history != nil { BatteryTodayCard(today: model.today) }
+                    ChargeScheduleCard(store: store)
+                }
             } else {
-                card(nil) {
-                    Text(L.t(sampler.hasSample ? "b.unavailable" : "b.loading"))
-                        .font(.system(size: 12)).foregroundStyle(Theme.ink2)
+                Card {
+                    EmptyState(icon: "battery.0percent", text: L.t(sampler.hasSample ? "b.unavailable" : "b.loading"))
+                        .frame(height: 120)
                 }
             }
-            Spacer(minLength: 0)
         }
+        .onAppear(perform: show)
+        .onChange(of: range) { _ in show() }
+        .onChange(of: store.config.fahrenheit) { _ in show() }
+        .onChange(of: limit?.limit) { _ in show() }
     }
 
-    private func status(_ battery: BatterySnapshot) -> some View {
-        card(L.t("b.status")) {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: battery.icon).font(.system(size: 26)).foregroundStyle(battery.chargeColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(battery.percent.map { "\($0)%" } ?? "—")
-                        .font(Theme.telemetry(28, .bold)).foregroundStyle(Theme.ink)
-                    Text(battery.state.title).font(.system(size: 12)).foregroundStyle(Theme.ink2)
-                }
-                Spacer()
-            }
-            ChargeBar(fraction: Double(battery.percent ?? 0) / 100, color: battery.chargeColor).frame(height: 5)
-            if let hardware = battery.hardwarePercent {
-                row(L.t("b.hardwarePercent"), String(format: "%.1f%%", hardware), help: L.t("b.hardwareHelp"))
-            }
-            if let minutes = battery.timeToFullMinutes {
-                row(L.t("b.timeToFull"), formatBatteryMinutes(minutes))
-            } else if let minutes = battery.timeToEmptyMinutes {
-                row(L.t("b.timeToEmpty"), formatBatteryMinutes(minutes))
-            }
-            row(L.t("b.powerSource"), adapterText(battery))
-        }
-        .frame(maxWidth: 640)
-    }
-
-    private func flow(_ battery: BatterySnapshot) -> some View {
-        card(L.t("b.powerFlow")) {
-            if battery.externalPower, let input = battery.systemPowerIn { row(L.t("b.fromAdapter"), watts(input)) }
-            if let load = battery.systemLoad { row(L.t("b.systemLoad"), watts(load)) }
-            if let power = battery.batteryPower {
-                row(L.t("b.batteryFlow"), signedWatts(power), help: L.t("b.batteryFlowHelp"))
-            }
-            if battery.externalPower, let loss = battery.adapterLoss { row(L.t("b.adapterLoss"), watts(loss)) }
-            if let voltage = battery.voltage, let amperage = battery.amperage {
-                let current = abs(amperage) < 0.005 ? "0.00 A" : String(format: "%+.2f A", amperage)
-                row(L.t("b.voltageCurrent"), String(format: "%.2f V · ", voltage) + current)
-            }
-        }
-    }
-
-    private func health(_ battery: BatterySnapshot) -> some View {
-        card(L.t("b.health")) {
-            if let health = battery.health {
-                row(L.t("b.maxCapacity"), String(format: "%.0f%%", health), help: L.t("b.capacityHelp"))
-            }
-            if let full = battery.fullChargeCapacity { row(L.t("b.fullCharge"), "\(full) mAh") }
-            if let design = battery.designCapacity { row(L.t("b.design"), "\(design) mAh") }
-            if let cycles = battery.cycleCount {
-                row(L.t("b.cycles"), battery.designCycleCount.map { "\(cycles) / \($0)" } ?? "\(cycles)")
-            }
-            if let temperature = battery.temperature {
-                row(L.t("b.temperature"), fmtTemp(Float(temperature), fahrenheit: store.config.fahrenheit))
-            }
-        }
-    }
-
-    private func adapterText(_ battery: BatterySnapshot) -> String {
-        guard battery.externalPower else { return L.t("b.noAdapter") }
-        switch (battery.adapterName, battery.adapterWatts) {
-        case let (name?, watts?) where !name.contains("\(watts)W"): return "\(name) · \(watts) W"
-        case let (name?, _): return name
-        case let (nil, watts?): return "\(watts) W"
-        default: return L.t("b.adapterConnected")
-        }
-    }
-
-    private func row(_ label: String, _ value: String, help: String? = nil) -> some View {
-        HStack {
-            Text(label).font(.system(size: 12)).foregroundStyle(Theme.ink2)
-            Spacer(minLength: 8)
-            Text(value).font(Theme.telemetry(12)).foregroundStyle(Theme.ink).lineLimit(1)
-        }
-        .help(help ?? "")
-    }
-    @ViewBuilder private func card<C: View>(_ title: String?, @ViewBuilder _ content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let title {
-                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-            }
-            content()
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-        .shadow(color: Theme.cardShadow, radius: 7, y: 2)
+    private func show() {
+        guard let history else { return }
+        model.show(history, range: range, limit: limit?.limit ?? 100, fahrenheit: store.config.fahrenheit)
     }
 }
 
@@ -234,35 +178,18 @@ struct ChargeControlCard: View {
     @State private var draggedLimit: Double?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L.t("cc.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+        Card(L.t("cc.title"), icon: "bolt.fill") {
             if !mon.helperSupportsBattery {
-                helperRow
+                HelperCallout(mon: mon, title: L.t(mon.helperNeedsUpdate ? "control.update" : "cc.title"),
+                              message: L.t(mon.helperNeedsUpdate ? "control.updateBody" : "cc.needsHelper"), action: "cc.install")
             } else if let status = control.status {
                 controls(status)
             } else {
-                note(L.t("b.loading"))
+                Note(L.t("b.loading"))
             }
-            if let error = control.lastError { alert(L.f("cc.error", error), .red) }
+            if let error = control.lastError { Callout(.error, message: L.f("cc.error", error)) }
         }
-        .padding(16).frame(maxWidth: 640, alignment: .leading)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-        .shadow(color: Theme.cardShadow, radius: 7, y: 2)
         .onChange(of: control.status?.settings.limit) { _ in draggedLimit = nil }
-    }
-
-    private var helperRow: some View {
-        HStack(spacing: 10) {
-            note(L.t("cc.needsHelper"))
-            Spacer()
-            Button { mon.enableControl() } label: {
-                HStack {
-                    if mon.busy { ProgressView().controlSize(.small) }
-                    Text(L.t(mon.helperNeedsUpdate ? "control.updateShort" : "cc.install"))
-                }
-            }.buttonStyle(.borderedProminent).tint(Theme.accent).controlSize(.small).disabled(mon.busy)
-        }
     }
 
     @ViewBuilder private func controls(_ status: ChargeControlStatus) -> some View {
@@ -271,17 +198,13 @@ struct ChargeControlCard: View {
         toggle(L.t("cc.enable"), settings.enabled) { var s = settings; s.enabled = $0; control.apply(s) }
             .disabled(!usable && !settings.enabled)
         if status.backend == .none {
-            HStack(alignment: .top, spacing: 10) {
-                alert(L.t("cc.unsupported"), .orange)
-                Spacer()
-                openBatterySettings
-            }
+            Callout(.warning, message: L.t("cc.unsupported")) { openBatterySettings }
         }
-        if let conflict = status.conflict { alert(L.f("cc.conflict", conflict), .orange) }
+        if let conflict = status.conflict { Callout(.warning, message: L.f("cc.conflict", conflict)) }
         if settings.enabled && usable {
             let shown = Int(draggedLimit ?? Double(settings.limit))
             VStack(alignment: .leading, spacing: 4) {
-                Text(L.f("cc.stopAt", shown)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                Text(L.f("cc.stopAt", shown)).font(Theme.Typo.body).foregroundStyle(Theme.ink)
                 Slider(value: Binding(get: { draggedLimit ?? Double(settings.limit) }, set: { draggedLimit = $0 }),
                        in: Double(ChargeLimitSettings.limitRange.lowerBound)...Double(ChargeLimitSettings.limitRange.upperBound),
                        step: 5, onEditingChanged: { editing in
@@ -292,13 +215,13 @@ struct ChargeControlCard: View {
             }
             Stepper(value: Binding(get: { settings.sailing }, set: { var s = settings; s.sailing = $0; control.apply(s) }),
                     in: ChargeLimitSettings.sailingRange) {
-                Text(L.f("cc.resumeAt", settings.resumeAt)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                Text(L.f("cc.resumeAt", settings.resumeAt)).font(Theme.Typo.body).foregroundStyle(Theme.ink)
             }
             .help(L.t("cc.resumeHelp"))
             nativeLimitNote(settings.limit)
-            Text(stateText(status)).font(.system(size: 11)).foregroundStyle(Theme.ink2)
+            Text(stateText(status)).font(Theme.Typo.caption).foregroundStyle(Theme.ink2)
             if external { topUpRow(status) }
-            Divider().overlay(Theme.line)
+            RowDivider()
             toggle(L.t("cc.sleepStop"), settings.sleepStop) { var s = settings; s.sleepStop = $0; control.apply(s) }
                 .help(L.t("cc.sleepStopHelp"))
             toggle(L.t("cc.stayAwake"), settings.stayAwake) { var s = settings; s.stayAwake = $0; control.apply(s) }
@@ -306,10 +229,10 @@ struct ChargeControlCard: View {
         }
         // The LED works without the limit, and even where charging can't be controlled.
         if status.ledSupported && status.conflict == nil {
-            Divider().overlay(Theme.line)
+            RowDivider()
             ledRow(status)
         }
-        if status.writeFailed { alert(L.t("cc.writeFailed"), .red) }
+        if status.writeFailed { Callout(.error, message: L.t("cc.writeFailed")) }
     }
 
     @ViewBuilder private func heatRows(_ status: ChargeControlStatus) -> some View {
@@ -320,21 +243,19 @@ struct ChargeControlCard: View {
             Stepper(value: Binding(get: { settings.heatLimit }, set: { var s = settings; s.heatLimit = $0; control.apply(s) }),
                     in: ChargeLimitSettings.heatRange) {
                 Text(L.f("cc.heatAbove", temperature(Double(settings.heatLimit))))
-                    .font(.system(size: 12)).foregroundStyle(Theme.ink)
+                    .font(Theme.Typo.body).foregroundStyle(Theme.ink)
             }
-            if let current = status.temperature { note(L.f("cc.heatNow", temperature(current))) }
+            if let current = status.temperature { Note(L.f("cc.heatNow", temperature(current))) }
         }
     }
 
     private func ledRow(_ status: ChargeControlStatus) -> some View {
         let settings = status.settings
-        return HStack {
-            Text(L.t("cc.led")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-            Spacer()
+        return SettingRow(L.t("cc.led")) {
             Picker("", selection: Binding(get: { settings.ledMode }, set: { var s = settings; s.ledMode = $0; control.apply(s) })) {
                 ForEach(ChargeLimitSettings.LedMode.allCases) { mode in Text(L.t("cc.led.\(mode)")).tag(mode) }
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 250)
+            .pickerStyle(.segmented).labelsHidden().fixedSize().tint(Theme.accent)
         }
         .help(L.t("cc.ledHelp"))
     }
@@ -343,13 +264,9 @@ struct ChargeControlCard: View {
 
     @ViewBuilder private func nativeLimitNote(_ limit: Int) -> some View {
         if let native = control.nativeLimit, native < limit {
-            HStack(alignment: .top, spacing: 10) {
-                alert(L.f("cc.nativeBelow", native, limit), .orange)
-                Spacer()
-                openBatterySettings
-            }
+            Callout(.warning, message: L.f("cc.nativeBelow", native, limit)) { openBatterySettings }
         } else if let native = control.nativeLimit, native < 100 {
-            note(L.f("cc.nativeSafety", native))
+            Note(L.f("cc.nativeSafety", native))
         }
     }
 
@@ -362,9 +279,8 @@ struct ChargeControlCard: View {
 
     @ViewBuilder private func topUpRow(_ status: ChargeControlStatus) -> some View {
         HStack(spacing: 10) {
-            Button(L.t(status.topUp ? "cc.cancelTopUp" : "cc.topUp")) { control.setTopUp(!status.topUp) }
-                .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
-            if status.topUp, let native = control.nativeLimit, native < 100 { note(L.f("cc.topUpNative", native)) }
+            Button(L.t(status.topUp ? "cc.cancelTopUp" : "cc.topUp")) { control.setTopUp(!status.topUp) }.secondaryButton()
+            if status.topUp, let native = control.nativeLimit, native < 100 { Note(L.f("cc.topUpNative", native)) }
         }
     }
 
@@ -374,19 +290,10 @@ struct ChargeControlCard: View {
                 NSWorkspace.shared.open(url)
             }
         }
-        .buttonStyle(.bordered).controlSize(.small)
+        .secondaryButton()
     }
     private func toggle(_ label: String, _ value: Bool, _ set: @escaping (Bool) -> Void) -> some View {
-        Toggle(isOn: Binding(get: { value }, set: set)) {
-            Text(label).font(.system(size: 12)).foregroundStyle(Theme.ink)
-        }
-        .toggleStyle(.themed)
-    }
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-    }
-    private func alert(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+        ToggleRow(label, isOn: Binding(get: { value }, set: set))
     }
 }
 
@@ -400,29 +307,21 @@ struct ChargeScheduleCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(L.t("sched.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                Spacer()
-                Button(L.t("sched.add")) { store.config.chargeSchedules.append(ChargeSchedule()) }
-                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
-                    .disabled(store.config.chargeSchedules.count >= 16)
-            }
+        Card(L.t("sched.title"), icon: "calendar.badge.clock", accessory: {
+            Button(L.t("sched.add")) { store.config.chargeSchedules.append(ChargeSchedule()) }
+                .secondaryButton()
+                .disabled(store.config.chargeSchedules.count >= 16)
+        }) {
             if store.config.chargeSchedules.isEmpty {
-                note(L.t("sched.empty"))
+                Note(L.t("sched.empty"))
             }
             ForEach(store.config.chargeSchedules) { schedule in
                 row(schedule)
-                Divider().overlay(Theme.line)
+                RowDivider()
             }
-            note(L.t("sched.note"))
-            Text(L.t("sched.shortcuts")).font(.system(size: 11)).foregroundStyle(Theme.ink3)
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Note(L.t("sched.note"))
+            Note(L.t("sched.shortcuts")).textSelection(.enabled)
         }
-        .padding(16).frame(maxWidth: 640, alignment: .leading)
-        .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-        .shadow(color: Theme.cardShadow, radius: 7, y: 2)
     }
 
     private func row(_ schedule: ChargeSchedule) -> some View {
@@ -446,7 +345,7 @@ struct ChargeScheduleCard: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless).foregroundStyle(Theme.ink3).help(L.t("sched.delete"))
-                Toggle("", isOn: binding(schedule, \.enabled)).toggleStyle(.switch).labelsHidden().controlSize(.small)
+                Toggle(isOn: binding(schedule, \.enabled)) { EmptyView() }.toggleStyle(.themed).fixedSize()
             }
             weekdays(schedule)
         }
@@ -465,13 +364,14 @@ struct ChargeScheduleCard: View {
                     if on { days.remove(day) } else { days.insert(day) }
                     if !days.isEmpty { update(schedule) { $0.weekdays = days } }
                 } label: {
-                    Text(symbols[day - 1]).font(.system(size: 11, weight: .medium))
+                    Text(symbols[day - 1]).font(Theme.Typo.caption.weight(.medium))
                         .frame(width: 26, height: 22)
                         .background(on ? Theme.accent.opacity(0.22) : Theme.line.opacity(0.5))
                         .foregroundStyle(on ? Theme.accent : Theme.ink3)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.chip, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .accessibilityAddTraits(on ? [.isSelected] : [])
             }
         }
     }
@@ -492,9 +392,6 @@ struct ChargeScheduleCard: View {
             update(schedule) { $0.hour = parts.hour ?? $0.hour; $0.minute = parts.minute ?? $0.minute }
         })
     }
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-    }
 }
 
 // Discharging and calibration pause the power adapter, so they live in their own
@@ -506,19 +403,14 @@ struct DischargeCard: View {
 
     var body: some View {
         if let status = control.status, status.adapterSupported {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(L.t("dc.title")).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                note(L.t("dc.note"))
+            Card(L.t("dc.title"), icon: "battery.25percent") {
+                Note(L.t("dc.note"))
                 if let conflict = status.conflict {
-                    alert(L.f("cc.conflict", conflict), .orange)
+                    Callout(.warning, message: L.f("cc.conflict", conflict))
                 } else {
                     content(status)
                 }
             }
-            .padding(16).frame(maxWidth: 640, alignment: .leading)
-            .background(Theme.card).clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line, lineWidth: 1))
-            .shadow(color: Theme.cardShadow, radius: 7, y: 2)
             .alert(L.t("dc.calibrateTitle"), isPresented: $confirmCalibration) {
                 Button(L.t("dc.calibrateStart")) { control.calibrate(true) }
                 Button(L.t("dc.cancel"), role: .cancel) {}
@@ -531,14 +423,11 @@ struct DischargeCard: View {
     @ViewBuilder private func content(_ status: ChargeControlStatus) -> some View {
         let settings = status.settings
         if settings.enabled && settings.limit < 100 {
-            Toggle(isOn: Binding(get: { settings.autoDischarge },
-                                 set: { var s = settings; s.autoDischarge = $0; control.apply(s) })) {
-                Text(L.t("dc.auto")).font(.system(size: 12)).foregroundStyle(Theme.ink)
-            }
-            .toggleStyle(.themed)
+            ToggleRow(L.t("dc.auto"), isOn: Binding(get: { settings.autoDischarge },
+                                                    set: { var s = settings; s.autoDischarge = $0; control.apply(s) }))
         }
-        if !status.plugged { note(L.t("dc.needsPlug")) }
-        Divider().overlay(Theme.line)
+        if !status.plugged { Note(L.t("dc.needsPlug")) }
+        RowDivider()
         if status.calibration != .idle {
             calibrationRow(status)
         } else if let manual = status.dischargeTarget {
@@ -546,15 +435,15 @@ struct DischargeCard: View {
                 control.discharge(to: nil)
             }
         } else if status.adapterCut {
-            note(L.f("dc.activeAuto", settings.limit))
+            Note(L.f("dc.activeAuto", settings.limit))
         } else {
             HStack(spacing: 10) {
                 Stepper(value: $target, in: 10...95, step: 5) {
-                    Text(L.f("dc.target", target)).font(.system(size: 12)).foregroundStyle(Theme.ink)
+                    Text(L.f("dc.target", target)).font(Theme.Typo.body).foregroundStyle(Theme.ink)
                 }
                 Spacer()
                 Button(L.t("dc.start")) { control.discharge(to: target) }
-                    .buttonStyle(.bordered).controlSize(.small).tint(Theme.accent)
+                    .secondaryButton()
                     .disabled(!status.plugged)
             }
             calibrationStart(status)
@@ -563,7 +452,7 @@ struct DischargeCard: View {
 
     @ViewBuilder private func calibrationRow(_ status: ChargeControlStatus) -> some View {
         activeRow(Self.calibrationText(status)) { control.calibrate(false) }
-        note(L.t("dc.calibrateAuto"))
+        Note(L.t("dc.calibrateAuto"))
     }
 
     // "Calibrating · Step 1/5: charging to 100% · now 99%, 61 min so far"
@@ -593,26 +482,20 @@ struct DischargeCard: View {
         let native = control.nativeLimit ?? 100
         HStack(spacing: 10) {
             Button(L.t("dc.calibrate")) { confirmCalibration = true }
-                .buttonStyle(.bordered).controlSize(.small)
+                .secondaryButton()
                 .disabled(!status.plugged || native < 100)
-            if status.calibrationResult == 1 { note(L.t("dc.resultDone")) }
-            if status.calibrationResult == 2 { note(L.t("dc.resultStopped")) }
+            if status.calibrationResult == 1 { Label(L.t("dc.resultDone"), systemImage: "checkmark.circle.fill").font(Theme.Typo.caption).foregroundStyle(Theme.success) }
+            if status.calibrationResult == 2 { Label(L.t("dc.resultStopped"), systemImage: "exclamationmark.triangle.fill").font(Theme.Typo.caption).foregroundStyle(Theme.warning) }
         }
-        if native < 100 { alert(L.f("dc.needsNative100", native), .orange) }
+        if native < 100 { Callout(.warning, message: L.f("dc.needsNative100", native)) }
     }
 
     private func activeRow(_ text: String, stop: @escaping () -> Void) -> some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(text).font(.system(size: 12)).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
+            Text(text).font(Theme.Typo.secondary).foregroundStyle(Theme.ink).fixedSize(horizontal: false, vertical: true)
             Spacer()
-            Button(L.t("dc.stop"), action: stop).buttonStyle(.bordered).controlSize(.small)
+            Button(L.t("dc.stop"), action: stop).secondaryButton()
         }
-    }
-    private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(Theme.ink3).fixedSize(horizontal: false, vertical: true)
-    }
-    private func alert(_ text: String, _ color: Color) -> some View {
-        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
     }
 }

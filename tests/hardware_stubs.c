@@ -33,7 +33,9 @@ int cb_ctl_set(int fan, int rpm) { sets++; return available && !failure ? rpm : 
 int cb_ctl_auto(int fan) { autos++; return available ? 0 : -1; }
 int cb_ctl_auto_all(void) { autos++; return available ? 0 : -1; }
 int cb_ctl_heartbeat(void) { heartbeats++; return available && !failure ? 0 : -1; }
-int cb_ctl_version(void) { return 2; }
+static atomic_int helperVersion = 2;
+int cb_ctl_version(void) { return helperVersion; }
+void cb_test_version(int v) { helperVersion = v; }
 void cb_ctl_disconnect(void) { connection++; }
 uint64_t cb_ctl_connection_id(void) { return connection; }
 int cb_ctl_command(const char *command, char *reply, int capacity) {
